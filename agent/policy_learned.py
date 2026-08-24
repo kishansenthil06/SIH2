@@ -136,9 +136,20 @@ class PdBar:
     and monotone in snr, so this is exact to ~1e-12 and costs nothing.
 
     This is the same quantity agent B's `Belief` exposes.  `ActivityModel`
-    prefers the belief's own table when one is handed to it (so the two can
-    never drift); this class is the standalone fallback used for training,
-    reporting and tests.
+    prefers the belief's own table when one is handed to it; this class is the
+    standalone fallback used for training, reporting and tests.
+
+    **Quadrature must match agent B's, not merely approximate it.**  The
+    deconvolution DIVIDES by `pd_bar` and the belief's Bayes update MULTIPLIES
+    by it, so any disagreement between the two tables is a systematic bias in
+    the learned belief rather than a rounding difference.  The default
+    ``"belief"`` rule therefore reproduces `agent.belief.marginal_pd_table`
+    exactly -- 41 equally spaced nodes over +/-5 sigma with normal-pdf weights
+    renormalised to sum to 1 -- instead of the Gauss-Hermite rule this class
+    used to apply, which is the mathematically nicer integral but disagreed with
+    the belief by up to ~3e-3.  ``"hermite"`` keeps the old rule available;
+    `eval/tests/test_learned.py` cross-checks the default against a real
+    `Belief` to 1e-12, so a change on agent B's side fails loudly here.
     """
 
     pfa: float = 1.0e-3
@@ -146,14 +157,29 @@ class PdBar:
     mu_db: float = -15.0
     sigma_db: float = 5.0
     db_per_octave: float = 1.0
-    n_nodes: int = 32
+    n_nodes: int = 41
+    quadrature: str = "belief"
     _nodes: np.ndarray = field(init=False, repr=False)
     _weights: np.ndarray = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        x, w = np.polynomial.hermite.hermgauss(int(self.n_nodes))
-        self._nodes = x
-        self._weights = w / np.sqrt(np.pi)  # normalise so weights sum to 1
+        if self.quadrature == "belief":
+            # Mirrors agent/belief.py `_QUAD_N = 41`, `_QUAD_SIGMAS = 5.0`.
+            # `z` are standard-normal offsets; the weights are the pdf at those
+            # points renormalised, so the truncated tails do not bias the mean
+            # down.  Duplicated rather than imported, per DESIGN.md section 2.
+            z = np.linspace(-5.0, 5.0, int(self.n_nodes))
+            w = np.exp(-0.5 * z * z) / np.sqrt(2.0 * np.pi)
+            self._nodes = z / np.sqrt(2.0)   # __call__ multiplies by sqrt(2)*sigma
+            self._weights = w / w.sum()
+        elif self.quadrature == "hermite":
+            x, w = np.polynomial.hermite.hermgauss(int(self.n_nodes))
+            self._nodes = x
+            self._weights = w / np.sqrt(np.pi)  # normalise so weights sum to 1
+        else:
+            raise ValueError(
+                f"quadrature must be 'belief' or 'hermite', got {self.quadrature!r}"
+            )
 
     def __call__(self, dwell_s, bw_hz, gain_db=0.0):
         """Broadcasting marginal P_d.  Returns an array shaped like the inputs."""
@@ -442,6 +468,14 @@ def build_training_matrix(
         tau_next = tau_all.loc[valid].to_numpy(dtype=np.float64)
         bw_next = bw_all.loc[valid].to_numpy(dtype=np.float64)
 
+    # The leakage guard belongs HERE, on the columns actually selected for
+    # fitting, not only in the CLI.  `log_rows()` emits `channel` on every row
+    # for bookkeeping, and the single line below is the only thing standing
+    # between that column and the estimator; a guard that lives in `__main__`
+    # protects the command, not the code path.
+    fitting_names = FEATURE_NAMES + TRAIN_EXTRA_NAMES
+    assert_no_channel_leakage(fitting_names)
+
     feats = d[list(FEATURE_NAMES)].to_numpy(dtype=np.float64)
     extra = np.column_stack([np.log1p(tau_next), np.log1p(bw_next / 1.0e6)])
     X = np.column_stack([feats, extra])
@@ -455,8 +489,15 @@ def build_training_matrix(
         "tau_next": tau_next,
         "bw_next": bw_next,
         "run_id": d[run_col].to_numpy(),
+        # `channel` is carried in META, never in X.  Grouping the train/holdout
+        # split and diagnosing a run need it; the estimator must not see it.
         "channel": d[ch_col].to_numpy(),
+        "fitting_names": fitting_names,
         "pfa": float(pfa),
+        "scenarios": (sorted(set(d[sc].astype(str)))
+                      if (sc := _resolve(d.columns, "scenario")) else []),
+        "seeds": (sorted({int(v) for v in d[sd]})
+                  if (sd := _resolve(d.columns, "seed")) else []),
     }
     return X, y, meta
 
@@ -510,12 +551,36 @@ class ActivityModel:
     infer_dwell_s: float = 0.010
     infer_bw_hz: float = 1.0e6
 
+    # Opt-in: divide out a PER-PRIORITY-CLASS P_d instead of the band-wide one.
+    #
+    # DESIGN.md section 8 writes the inversion with the band-wide
+    # `pd_bar[bw_next, tau_next]`, and that is the default here for a concrete
+    # reason: `Belief.update` uses the band-wide `pd_bar_for` for its miss
+    # likelihood, so the band-wide divisor is the EXACT inverse of the forward
+    # map rung 1 applies -- which is what makes the Brier gate a like-for-like
+    # comparison (see `evaluate_gate`).
+    #
+    # But the agent's better estimate of P_d is per class: one band-wide assumed
+    # SNR told it a 2 ms scan had `P_d ~ 0.28` everywhere when for a -20 dB
+    # threat emitter it is 0.004, a 70x error, which is exactly why agent B added
+    # `pd_bar_by_class` / `class_index`.  Turning this on uses those numbers, so
+    # the SAME predicted P(detect) deconvolves to a much larger P(active) on a
+    # threat channel than on a routine one.  It inverts just as exactly (the test
+    # checks 1e-9 both ways); it simply answers a slightly different question, so
+    # it is a flag rather than a silent default.
+    use_class_pd_bar: bool = False
+
     # Set by `attach_to`: the Belief's own `pd_bar_for(bw_hz, dwell_s)`.  The
     # deconvolution divides by pd_bar and the belief multiplies by it, so the two
-    # MUST be the same numbers; this module's standalone `PdBar` uses a different
-    # quadrature and differs by up to ~3e-3, which is enough to bias the
-    # inversion.  Prefer the belief's table whenever one is available.
+    # MUST be the same numbers.  `PdBar` now reproduces the belief's quadrature
+    # exactly, so this is belt-and-braces rather than a correction -- but it also
+    # picks up any per-scenario config the standalone table was not told about.
     _pd_bar_fn: object = None
+    # Also from `attach_to`: `(n_class, n_bw, n_dwell)` and `(N,)`.
+    _pd_bar_by_class: "np.ndarray | None" = None
+    _class_index: "np.ndarray | None" = None
+    _bw_candidates_hz: "np.ndarray | None" = None
+    _dwell_candidates_s: "np.ndarray | None" = None
 
     # -- prediction ---------------------------------------------------------
     def predict_p_det(self, X) -> np.ndarray:
@@ -541,7 +606,7 @@ class ActivityModel:
         return p_active_from_p_det(self.predict_p_det(X), pd_bar_next, self.pfa)
 
     def _pd_bar_for(self, dwell_s, bw_hz) -> np.ndarray:
-        """Marginal P_d for one (dwell, bw).  Belief's table wins if attached."""
+        """Band-wide marginal P_d for one (dwell, bw).  Belief's table wins."""
         if self._pd_bar_fn is not None:
             # NOTE the argument order flip: Belief.pd_bar_for is (bw_hz, dwell_s).
             return np.asarray(
@@ -549,6 +614,26 @@ class ActivityModel:
             )
         pdb = self.pd_bar if self.pd_bar is not None else PdBar(pfa=self.pfa)
         return np.asarray(pdb(dwell_s, bw_hz), dtype=np.float64)
+
+    def _pd_bar_vector(self, dwell_s, bw_hz, n_rows: int) -> np.ndarray:
+        """`(n_rows,)` denominators for the deconvolution.
+
+        Band-wide by default (one value broadcast); per priority class when
+        `use_class_pd_bar` is set and `attach_to` supplied the tables.  A caller
+        with a channel count that does not match `class_index` -- a synthetic
+        matrix in a test, say -- falls back to band-wide rather than guessing.
+        """
+        band = np.broadcast_to(
+            np.asarray(self._pd_bar_for(dwell_s, bw_hz), dtype=np.float64), (n_rows,)
+        )
+        if not self.use_class_pd_bar:
+            return band
+        pdc, ci = self._pd_bar_by_class, self._class_index
+        if pdc is None or ci is None or ci.shape[0] != n_rows:
+            return band
+        i = int(np.argmin(np.abs(self._bw_candidates_hz - float(bw_hz))))
+        j = int(np.argmin(np.abs(self._dwell_candidates_s - float(dwell_s))))
+        return np.asarray(pdc[:, i, j], dtype=np.float64)[ci]
 
     def refine(
         self,
@@ -587,7 +672,7 @@ class ActivityModel:
             return p_rung1.copy()
 
         if pd_bar_next is None:
-            pd_bar_next = self._pd_bar_for(dwell_s, bw_hz)
+            pd_bar_next = self._pd_bar_vector(dwell_s, bw_hz, X.shape[0])
         pd_bar_next = np.broadcast_to(
             np.asarray(pd_bar_next, dtype=np.float64), p_rung1.shape
         )
@@ -626,15 +711,40 @@ class ActivityModel:
             )
         if self.estimator is None:
             return None  # belief falls back to rung 1
+        n = X.shape[0]
         dwell, bw = float(self.infer_dwell_s), float(self.infer_bw_hz)
-        pd_bar_next = np.broadcast_to(
-            self._pd_bar_for(dwell, bw), (X.shape[0],)
-        )
+        pd_bar_next = self._pd_bar_vector(dwell, bw, n)
+
+        # Predict ONLY on rows the belief's `min_visits_for_model` gate can
+        # actually use, and hand back rung 1 for the rest.
+        #
+        # This is a pure speed change -- `Belief.p_effective` applies the same
+        # `n_visits >= min_visits_for_model` mask immediately afterwards, so
+        # every value that survives is identical either way.  But the grid is
+        # 2000 channels wide (DESIGN.md section 11.1) and this is called on EVERY
+        # decision, while a sparse episode visits ~25% of channels at all and far
+        # fewer three times.  Scoring all 2000 rows through a 3-fold
+        # isotonic-calibrated HGB ensemble made a 1 s episode take 33 s -- rung 2
+        # was ~45x slower per decision than rung 1, purely on rows whose answers
+        # were about to be thrown away.
+        out = X[:, IDX_P_RUNG1].astype(np.float64, copy=True)
+        eligible = X[:, IDX_N_VISITS] >= float(self.min_visits_for_model)
+        k = int(np.count_nonzero(eligible))
+        if k == 0:
+            return out
+        Xe = X[eligible] if k < n else X
         extra = np.column_stack([
-            np.full(X.shape[0], np.log1p(dwell)),
-            np.full(X.shape[0], np.log1p(bw / 1.0e6)),
+            np.full(Xe.shape[0], np.log1p(dwell)),
+            np.full(Xe.shape[0], np.log1p(bw / 1.0e6)),
         ])
-        return self.predict_p_active(np.column_stack([X, extra]), pd_bar_next)
+        pe = self.predict_p_active(
+            np.column_stack([Xe, extra]),
+            pd_bar_next if k >= n else pd_bar_next[eligible],
+        )
+        if k >= n:
+            return pe
+        out[eligible] = pe
+        return out
 
     # -- the Brier gate -----------------------------------------------------
     def evaluate_gate(self, X, y, pd_bar_next, p_rung1=None) -> dict:
@@ -797,15 +907,37 @@ class ActivityModel:
             raise RuntimeError("Brier gate failed: " + obj.gate_reason)
         return obj
 
-    def attach_to(self, belief, beta: "float | None" = None) -> None:
-        """Hand this model to agent B's `Belief` via the frozen `BeliefLike` API.
+    def borrow_tables_from(self, belief) -> None:
+        """Take the belief's own P_d tables, so the two can never drift.
 
-        Also borrows the belief's own `pd_bar_for`, so the P_d the deconvolution
-        divides out is bit-identical to the P_d the belief multiplies back in.
+        The deconvolution divides by `pd_bar` and the belief's Bayes update
+        multiplies by it; if the two are not the same numbers, the difference is
+        a systematic bias in the learned belief, not a rounding error.  Also
+        picks up `pd_bar_by_class` / `class_index` (agent B added them because
+        one band-wide assumed SNR made a 2 ms scan look 70x more sensitive than
+        it is on a threat channel), which `use_class_pd_bar` can then act on.
+
+        Separate from `attach_to` because `eval/runner.py` wires the model up
+        with a bare `belief.attach_model(model, beta)` and never calls
+        `attach_to`; anything that only happens in `attach_to` therefore does not
+        happen in the actual sweep.
         """
         fn = getattr(belief, "pd_bar_for", None)
         if callable(fn):
             self._pd_bar_fn = fn
+        pdc = getattr(belief, "pd_bar_by_class", None)
+        ci = getattr(belief, "class_index", None)
+        bws = getattr(belief, "bw_candidates_hz", None)
+        dws = getattr(belief, "dwell_candidates_s", None)
+        if pdc is not None and ci is not None and bws is not None and dws is not None:
+            self._pd_bar_by_class = np.asarray(pdc, dtype=np.float64)
+            self._class_index = np.asarray(ci, dtype=np.int64)
+            self._bw_candidates_hz = np.asarray(bws, dtype=np.float64)
+            self._dwell_candidates_s = np.asarray(dws, dtype=np.float64)
+
+    def attach_to(self, belief, beta: "float | None" = None) -> None:
+        """Hand this model to agent B's `Belief` via the frozen `BeliefLike` API."""
+        self.borrow_tables_from(belief)
         b = float(self.beta if beta is None else beta)
         # The gate is the last word: a model that failed it never runs, however
         # the caller asks (GUARANTEE 3).
@@ -855,9 +987,20 @@ def train_activity_model(
     """
     import sklearn
 
+    # Belt and braces: nothing may fit a matrix whose columns include the raw
+    # channel index, however the caller assembled it.
+    assert_no_channel_leakage(FEATURE_NAMES + TRAIN_EXTRA_NAMES)
+
     X = np.asarray(X, dtype=np.float64)
     y = np.asarray(y).astype(np.int8).ravel()
     pd_bar_next = np.asarray(pd_bar_next, dtype=np.float64).ravel()
+    if X.shape[1] != len(FEATURE_NAMES) + len(TRAIN_EXTRA_NAMES):
+        raise ValueError(
+            f"X has {X.shape[1]} columns; the contract is "
+            f"{len(FEATURE_NAMES)} FEATURE_NAMES + {len(TRAIN_EXTRA_NAMES)} "
+            f"TRAIN_EXTRA_NAMES = {len(FEATURE_NAMES) + len(TRAIN_EXTRA_NAMES)}. "
+            "An extra column here is how a channel index would get in."
+        )
     if X.shape[0] != y.shape[0]:
         raise ValueError(f"X has {X.shape[0]} rows, y has {y.shape[0]}")
     if not np.isfinite(X).all():
@@ -915,9 +1058,13 @@ def train_activity_model(
         "sklearn_version": sklearn.__version__,
         "numpy_version": np.__version__,
         "python_version": sys.version.split()[0],
+        # Declared training set (the contract) AND what was actually in the
+        # data (the evidence).  Recording only the first would let a collection
+        # that silently included `agile`, or an evaluation seed, ship unnoticed.
         "training_scenarios": list(TRAIN_SCENARIOS),
         "training_seeds": list(TRAIN_SEEDS),
         "held_out_scenario": HELD_OUT_SCENARIO,
+        "pd_bar_quadrature": "belief",
         "n_rows_total": int(n),
         "n_rows_train": int(train_mask.sum()),
         "n_rows_holdout": int(test_mask.sum()),
@@ -958,10 +1105,33 @@ def _cmd_train(args) -> int:
     print(f"[rung 2] {len(df)} log rows -> {X.shape[0]} labelled rows, "
           f"{X.shape[1]} columns, positive rate {np.mean(y):.4f}")
 
+    # What the collection ACTUALLY contained, recorded next to what the contract
+    # says it should contain.  If `agile` or an evaluation seed ever leaks into
+    # `data/logs/`, this is where it becomes visible after the fact.
+    observed = {
+        "observed_scenarios": meta.get("scenarios", []),
+        "observed_seeds": meta.get("seeds", []),
+        "observed_runs": int(len(set(map(str, meta["run_id"])))),
+        "log_rows_read": int(len(df)),
+    }
+    bad_scen = [s for s in observed["observed_scenarios"]
+                if s.lower() == HELD_OUT_SCENARIO]
+    if bad_scen:
+        print(f"[rung 2] REFUSING to train: the held-out scenario "
+              f"{HELD_OUT_SCENARIO!r} is present in the logs.", file=sys.stderr)
+        return 2
+    bad_seeds = [s for s in observed["observed_seeds"] if s not in TRAIN_SEEDS]
+    if bad_seeds:
+        print(f"[rung 2] REFUSING to train: seeds {bad_seeds} are outside the "
+              f"rung-2 collection range {TRAIN_SEEDS[0]}-{TRAIN_SEEDS[-1]}; "
+              "evaluation seeds must never be trained on.", file=sys.stderr)
+        return 2
+
     model = train_activity_model(
         X, y, meta["pd_bar_next"],
         seed=args.seed, pfa=args.pfa, beta=args.beta,
         min_visits_for_model=args.min_visits, groups=meta["run_id"],
+        manifest_extra=observed,
     )
     path = model.save(args.out)
     print(f"[rung 2] saved {path}")

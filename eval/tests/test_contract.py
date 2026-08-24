@@ -108,19 +108,21 @@ class TestConfigs(unittest.TestCase):
     def test_mission_expansion(self):
         cfg = load_config("sparse")
         m = build_mission(cfg)
-        self.assertEqual(m.priority[50], 1)     # threat band 40-60
-        self.assertEqual(m.priority[130], 2)    # 120-150
-        self.assertEqual(m.priority[5], 3)      # catch-all
+        self.assertEqual(m.priority[500], 1)    # threat band 400-600
+        self.assertEqual(m.priority[1300], 2)   # 1200-1500
+        self.assertEqual(m.priority[50], 3)     # catch-all
+        self.assertAlmostEqual(m.w[500], 1.000)
+        self.assertAlmostEqual(m.w[1300], 0.300)
         self.assertAlmostEqual(m.w[50], 0.100)
-        self.assertAlmostEqual(m.w[130], 0.030)
-        self.assertAlmostEqual(m.w[5], 0.010)
 
     def test_deadlines(self):
         m = build_mission(load_config("sparse"))
         d = m.deadline_for()
-        self.assertAlmostEqual(d[50], 0.5)
-        self.assertAlmostEqual(d[130], 2.0)
-        self.assertAlmostEqual(d[5], 10.0)
+        # Deadlines were reset so total mandated dwell fits the budget; the old
+        # {1: 0.5} was infeasible by 20x.  See DESIGN.md 11.6.
+        self.assertAlmostEqual(d[500], 30.0)
+        self.assertAlmostEqual(d[1300], 8.0)
+        self.assertAlmostEqual(d[50], 20.0)
 
     def test_config_hash_is_stable_and_discriminating(self):
         a = load_config("sparse")["config_hash"]
@@ -131,7 +133,7 @@ class TestConfigs(unittest.TestCase):
 
     def test_bad_priority_band_rejected(self):
         cfg = load_config("sparse")
-        cfg["mission"]["priority_bands"].append({"ch_lo": 190, "ch_hi": 500, "priority": 1})
+        cfg["mission"]["priority_bands"].append({"ch_lo": 1900, "ch_hi": 5000, "priority": 1})
         with self.assertRaises(Exception):
             validate_config(cfg)
 

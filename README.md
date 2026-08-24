@@ -131,25 +131,63 @@ python -m app.dashboard --run <run_id>
 
 ---
 
+## Results
+
+Measured on a 2 GHz / 2000-channel grid, 60 s horizon, 6 J budget (0.1 W average).
+Median energy per detection, mean POI@60, 5 seeds per cell. Regenerate with
+`python -m eval.runner ... ` and read `results/runs.csv`.
+
+| scenario | policy | J / detection | POI@60 |
+|---|---|---|---|
+| **sparse** (8 emitters) | round_robin | 1.999 | **0.400** |
+| | index | **0.667** (−66.7%) | 0.275 |
+| | oracle | 0.109 | 0.825 |
+| **dense** (24 emitters) | round_robin | 0.500 | 0.350 |
+| | index | **0.181** (−63.8%) | **0.400** |
+| | oracle | 0.333 | 0.525 |
+| **agile** (hoppers, *held out*) | round_robin | 2.999 | 0.171 |
+| | index | **0.600** (−80.0%) | **0.386** |
+| | oracle | 1.198 | 0.286 |
+
+**The claim, stated honestly and conditionally:**
+
+> Adaptive scanning cuts energy per detection by 64–80% and matches or beats a
+> tuned sweep on interception **once the environment has enough structure to learn
+> from** — most of all against frequency-agile emitters, on scenarios it never saw.
+> In a very sparse band a blind sweep remains hard to beat on pure discovery.
+
+That conditional is the useful engineering result. Reporting only `dense` and
+`agile` would be cherry-picking; the `sparse` POI deficit is analysed in
+`DESIGN.md` §11.7–11.8 and left open rather than papered over.
+
+### Two caveats that must travel with these numbers
+
+- **Energy per detection can be gamed** by harvesting cheap detections, so it is
+  never quoted without POI beside it. On `dense`, `index` beats the *oracle* on
+  energy per detection precisely this way — the oracle takes the higher POI.
+- **The oracle is not a valid upper bound on `agile`.** It is clairvoyant *greedy*
+  over one action, so against emitters hopping every 50 ms it dwells on a channel
+  the emitter has already left. Clairvoyance about the present does not help when
+  the target moves inside your action.
+
+### Ablation: what the belief and scheduler actually contribute
+
+`greedy` is `index` with Markov propagation removed, the staleness bonus zeroed and
+the scheduler disabled. On `sparse` it collapses to **5.999 J/detection at POI
+0.150**, against `index`'s 0.667 / 0.275 — a direct measurement of what the belief
+decay and the constrained scheduler are worth, rather than an assertion that they
+matter.
+
 ## Metrics
 
-| metric | target vs sweep |
+| metric | definition |
 |---|---|
-| POI @ T — fraction of emitters intercepted within horizon | parity or better |
-| TTFI, priority-1 — median time to first intercept | 2–4× faster |
-| Emitter-time coverage — % of emitter-active seconds observed | parity or better |
-| **Energy per detection** ← the headline | **40–60% lower** |
-| Max staleness, priority-1 | hard-bounded |
-| False alarm rate | no worse |
-
-The sentence all of this is built toward:
-
-> *"Same interception performance at roughly half the scanning energy, measured against
-> a clairvoyant upper bound."*
-
-If a feature does not help say that sentence, it is not in scope.
-
----
+| POI @ T | fraction of distinct emitters intercepted within the horizon |
+| TTFI, priority-1 | median time to first intercept, censored at horizon |
+| Emitter-time coverage | % of emitter-active seconds the receiver was pointed at |
+| **Energy per detection** | joules / distinct `(emitter, activation)` pairs |
+| Max staleness, priority-1 | worst revisit gap on a high-priority channel |
+| False alarm rate | per channel-dwell, comparable to the configured `P_fa` |
 
 ## Policy rungs
 

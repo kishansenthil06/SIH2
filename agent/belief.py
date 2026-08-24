@@ -176,6 +176,22 @@ def marginal_pd_table(
 
 
 # ---------------------------------------------------------------------- belief
+def _expand_by_priority(by_prio, scalar_default: float, mission: Mission, n: int) -> np.ndarray:
+    """Expand a {priority: value} mapping into an (N,) per-channel array.
+
+    Falls back to `scalar_default` everywhere when the mapping is absent, so a
+    config written before per-class priors existed still loads and behaves
+    exactly as it did.  Channels whose priority is not named in the mapping
+    (including untasked priority-0 channels) also keep the scalar default.
+    """
+    out = np.full(n, float(scalar_default), dtype=np.float64)
+    if not by_prio:
+        return out
+    for prio, val in dict(by_prio).items():
+        out[mission.priority == int(prio)] = float(val)
+    return out
+
+
 class Belief:
     """Per-channel occupancy posterior + rung-2 sufficient statistics.
 
@@ -213,13 +229,46 @@ class Belief:
 
         # The agent's assumed dynamics.  DELIBERATELY not the truth -- the agent
         # is given a spec sheet, not the simulator's parameters.
-        pi0 = float(acfg.get("prior_pi_on", 0.05))
-        lam0 = float(acfg.get("prior_lam_sum", 1.0))
-        self.pi_on = np.full(n, pi0, dtype=np.float64)
-        self.lam_sum = np.full(n, lam0, dtype=np.float64)
+        #
+        # The prior is PER PRIORITY CLASS, not uniform, and that matters more than
+        # it looks.  With a uniform prior, `value = p*w` is dominated by `w`, so a
+        # threat channel (w=1.0 J) outranks a routine one (w=0.1 J) by 10x -- even
+        # though threat emitters are on ~2% of the time and routine ones ~40%.
+        # Measured consequence of the uniform version: 69.6% of the energy budget
+        # (27.3 s of dwell) went into a band that was empty 98% of the time, and
+        # the policy lost to a round-robin sweep by 8x on energy per detection.
+        #
+        # Per-class priors are legitimately agent-visible intel, exactly like the
+        # mission priority bands -- an ESM operator knows threat emitters are rare
+        # but valuable while routine emitters chatter constantly.  It is NOT a
+        # truth leak: the numbers come from config as standing assumptions and are
+        # never fitted to the running scenario.
+        self.pi_on = _expand_by_priority(
+            acfg.get("prior_pi_on_by_priority"),
+            float(acfg.get("prior_pi_on", 0.05)),
+            mission,
+            n,
+        )
+        self.lam_sum = _expand_by_priority(
+            acfg.get("prior_lam_sum_by_priority"),
+            float(acfg.get("prior_lam_sum", 1.0)),
+            mission,
+            n,
+        )
 
         self.assumed_snr_mu_db = float(acfg.get("assumed_snr_mu_db", -15.0))
         self.assumed_snr_sigma_db = float(acfg.get("assumed_snr_sigma_db", 5.0))
+
+        # Per-priority-class assumed SNR.  Same intel argument as the per-class
+        # prior above, and it fixes a distinct failure: with ONE assumed SNR
+        # distribution the agent believed a 2 ms scan had P_d ~ 0.28 everywhere,
+        # when for a -20 dB threat emitter the true P_d at 2 ms is 0.004 -- 70x
+        # optimistic.  It therefore never chose a dwell above 5 ms and intercepted
+        # exactly zero priority-1 emitters.  Telling it that threat emitters are
+        # weak is what makes long dwells rational where they are actually needed.
+        self.assumed_snr_mu_by_priority = acfg.get("assumed_snr_mu_db_by_priority") or {}
+        # 0 disables the adaptive prior and restores the static one exactly.
+        self._prior_pseudocount = float(acfg.get("prior_pseudocount", 0.0))
 
         learned = acfg.get("learned", {}) or {}
         self.min_visits_for_model = int(learned.get("min_visits_for_model", 3))
@@ -241,6 +290,34 @@ class Belief:
             bw_penalty_db_per_octave=self.bw_penalty,
             channel_bw_hz=self.channel_bw_hz,
         )
+
+        # pd_bar_by_class[k, bw, dwell] for priority class k in 0..3, where class 0
+        # is "untasked" and falls back to the scalar assumed SNR.  The policy uses
+        # this so the expected gain of a candidate reflects how detectable the
+        # emitters in THAT band actually are, rather than one band-wide average.
+        self.priority_classes = (0, 1, 2, 3)
+        self.pd_bar_by_class: np.ndarray = np.stack(
+            [
+                marginal_pd_table(
+                    self.bw_candidates_hz,
+                    self.dwell_candidates_s,
+                    float(
+                        self.assumed_snr_mu_by_priority.get(
+                            k, self.assumed_snr_mu_by_priority.get(str(k), self.assumed_snr_mu_db)
+                        )
+                    ),
+                    self.assumed_snr_sigma_db,
+                    self.pfa,
+                    bw_penalty_db_per_octave=self.bw_penalty,
+                    channel_bw_hz=self.channel_bw_hz,
+                )
+                for k in self.priority_classes
+            ]
+        )
+        # (N,) index into pd_bar_by_class for every channel.
+        self.class_index = np.zeros(n, dtype=np.int64)
+        for i, k in enumerate(self.priority_classes):
+            self.class_index[np.asarray(mission.priority) == k] = i
 
         self.w = np.asarray(mission.w, dtype=np.float64).copy()
 
@@ -293,13 +370,38 @@ class Belief:
         dt = t - self.t_now
         if dt <= 0.0:
             return
-        self.p = self.pi_on + (self.p - self.pi_on) * np.exp(-self.lam_sum * dt)
+        pi = self._prior_target()
+        self.p = pi + (self.p - pi) * np.exp(-self.lam_sum * dt)
         self.t_now = t
+
+    def _prior_target(self) -> np.ndarray:
+        """What the belief decays TOWARD.  Static config prior, or learned.
+
+        A static prior throws away the most valuable thing the agent learns.
+        `p` answers "is this channel radiating right now" -- transient, and it
+        should decay.  But a detection also proves an emitter LIVES here, which is
+        permanent.  Decaying to a band-wide constant discards that, so the agent
+        re-derives the spectrum's layout from scratch every couple of seconds and
+        can never do better than sweeping.
+
+        The fix is one Beta-Bernoulli posterior per channel: blend the config
+        prior with this channel's own observed hit rate under `prior_pseudocount`
+        pseudo-observations.  A channel that has produced detections decays to a
+        HIGH floor and keeps earning revisits; a channel scanned repeatedly with
+        nothing decays below the prior and is left alone.  That asymmetry is the
+        mechanism by which an adaptive policy beats a sweep rather than merely
+        matching it -- and it is still strictly the agent's own logs, no truth.
+        """
+        if self._prior_pseudocount <= 0.0:
+            return self.pi_on
+        a = self._prior_pseudocount
+        return (self.n_detections + a * self.pi_on) / (self.n_visits + a)
 
     def _propagated(self, t: float) -> np.ndarray:
         """Non-mutating propagation, so scoring at a hypothetical `t` is safe."""
         if self.mode == "laplace":
             return (self.n_detections + 1.0) / (self.n_visits + 2.0)
+        pi = self._prior_target()
         dt = float(t) - self.t_now
         if dt <= 0.0:
             return self.p

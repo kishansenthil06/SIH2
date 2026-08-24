@@ -237,8 +237,8 @@ class TestDeconvolution(unittest.TestCase):
     def test_uses_the_beliefs_own_pd_bar_when_attached(self):
         """The belief's table and this module's must never drift apart.
 
-        They use different quadratures and disagree by ~3e-3, which is enough to
-        bias the inversion, so an attached model borrows the belief's numbers.
+        The deconvolution divides by pd_bar and the belief's Bayes update
+        multiplies by it, so a disagreement is a systematic bias, not rounding.
         """
         from agent.belief import Belief
         from sim.config import build_grid, build_mission, load_config
@@ -250,6 +250,94 @@ class TestDeconvolution(unittest.TestCase):
         self.assertEqual(
             float(model._pd_bar_for(0.010, 1.0e6)), bel.pd_bar_for(1.0e6, 0.010)
         )
+
+    def test_standalone_pdbar_reproduces_the_beliefs_quadrature(self):
+        """The STANDALONE table must match too, not just the borrowed one.
+
+        `eval/runner.py` wires the model in with a bare `attach_model`, never
+        `attach_to`, so `_pd_bar_fn` is None on the path that actually runs the
+        sweep -- which means the standalone `PdBar` IS the divisor there.  The
+        old Gauss-Hermite rule disagreed with `agent.belief.marginal_pd_table` by
+        up to ~2.9e-3, a systematic bias in every deconvolution.  The default
+        quadrature now reproduces the belief's rule exactly.
+        """
+        from agent.belief import Belief
+        from sim.config import build_grid, build_mission, load_config
+
+        cfg = load_config("sparse")
+        bel = Belief(build_grid(cfg), build_mission(cfg), cfg)
+        pdb = PdBar.from_cfg(cfg)
+        self.assertEqual(pdb.quadrature, "belief", "the matching rule is the default")
+
+        worst = 0.0
+        for bw_mhz in (1, 2, 5, 10, 20):
+            for dw_ms in (1, 2, 5, 10, 20, 50, 100, 200):
+                ref = bel.pd_bar_for(bw_mhz * 1e6, dw_ms * 1e-3)
+                got = float(pdb(dw_ms * 1e-3, bw_mhz * 1e6))
+                worst = max(worst, abs(got - ref))
+        self.assertLess(worst, 1e-12,
+                        f"standalone PdBar drifts from Belief by {worst:.2e}")
+
+    def test_class_aware_deconvolution_also_inverts_exactly(self):
+        """The opt-in per-class divisor must invert to 1e-9 as well.
+
+        Agent B exposes `pd_bar_by_class` because ONE band-wide assumed SNR made
+        a 2 ms scan look like `P_d ~ 0.28` everywhere when for a -20 dB threat
+        emitter it is 0.004.  Dividing by the per-class number is a different
+        question but the same algebra, and the round trip must still be exact --
+        otherwise the flag would quietly double-count the detector.
+        """
+        from agent.belief import Belief
+        from sim.config import build_grid, build_mission, load_config
+
+        cfg = load_config("sparse")
+        bel = Belief(build_grid(cfg), build_mission(cfg), cfg)
+        model = ActivityModel(estimator=None, use_class_pd_bar=True)
+        model.borrow_tables_from(bel)
+
+        n = bel.n
+        pd_vec = model._pd_bar_vector(0.002, 1.0e6, n)
+        self.assertEqual(pd_vec.shape, (n,))
+        # Per class, not one number everywhere -- that is the whole point.
+        self.assertGreater(len(set(np.round(pd_vec, 12).tolist())), 1)
+
+        rng = np.random.default_rng(3)
+        p_act = rng.uniform(1e-4, 1.0 - 1e-4, n)
+        back = p_active_from_p_det(
+            p_det_from_p_active(p_act, pd_vec, 1e-3), pd_vec, 1e-3
+        )
+        self.assertLess(float(np.max(np.abs(back - p_act))), 1e-9)
+
+    def test_class_aware_divisor_is_smaller_on_a_threat_channel(self):
+        """A -19 dB threat channel is far less detectable than a -10 dB routine
+        one, so the same P(detect) must deconvolve to MORE activity there."""
+        from agent.belief import Belief
+        from sim.config import build_grid, build_mission, load_config
+
+        cfg = load_config("sparse")
+        mission = build_mission(cfg)
+        bel = Belief(build_grid(cfg), mission, cfg)
+        model = ActivityModel(estimator=None, use_class_pd_bar=True)
+        model.borrow_tables_from(bel)
+
+        prio = np.asarray(mission.priority)
+        pd_vec = model._pd_bar_vector(0.002, 1.0e6, bel.n)
+        p1 = pd_vec[prio == 1]
+        p3 = pd_vec[prio == 3]
+        if not p1.size or not p3.size:
+            self.skipTest("scenario has no prio-1 or no prio-3 mission channels")
+        self.assertLess(float(p1.mean()), float(p3.mean()),
+                        "threat channels must have the LOWER assumed P_d")
+        # ...and therefore the larger deconvolved activity for one P(detect).
+        a1 = p_active_from_p_det(0.05, float(p1.mean()))
+        a3 = p_active_from_p_det(0.05, float(p3.mean()))
+        self.assertGreater(float(a1), float(a3))
+
+    def test_band_wide_is_the_default(self):
+        """DESIGN.md section 8 writes the band-wide form, and the Brier gate
+        compares against rung 1's band-wide forward map, so that is the default;
+        per-class is a flag, never a silent change of behaviour."""
+        self.assertFalse(ActivityModel().use_class_pd_bar)
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +660,384 @@ class TestLogsAbsentDegradesCleanly(unittest.TestCase):
             )
             kept = load_log_frame(log_dir=Path(d))
         self.assertEqual(set(kept["scenario"].unique()), {"sparse"})
+
+
+# ---------------------------------------------------------------------------
+# 7. The REAL collector output, when it is on disk
+# ---------------------------------------------------------------------------
+ROOT = Path(__file__).resolve().parents[2]
+REAL_LOG_DIR = ROOT / "data" / "logs"
+
+
+def _one_real_log():
+    """The smallest real collector CSV, or None.  `data/logs/` is gitignored."""
+    if not REAL_LOG_DIR.is_dir():
+        return None
+    paths = sorted(REAL_LOG_DIR.glob("*.csv"), key=lambda p: p.stat().st_size)
+    return paths[0] if paths else None
+
+
+class TestRealCollectorOutput(unittest.TestCase):
+    """Everything above runs on a synthetic frame, deliberately -- the tests must
+    not depend on agent C's collector having run.  But a synthetic schema can
+    agree with itself and still disagree with reality, so when
+    `python -m eval.runner --collect` HAS run, these assert against its actual
+    output.  They skip cleanly when it has not.
+
+    Capped to one episode and a slice of its rows so the file stays inside the
+    per-test budget on the wide grid (~5300 rows per episode).
+    """
+
+    MAX_ROWS = 4000
+
+    @classmethod
+    def setUpClass(cls):
+        cls.path = _one_real_log()
+        if cls.path is None:
+            raise unittest.SkipTest(
+                "no collected logs in data/logs/; run "
+                "`python -m eval.runner --collect --scenarios sparse dense "
+                "--seeds 100-119` to exercise these"
+            )
+        import pandas as pd
+
+        cls.df = pd.read_csv(cls.path, nrows=cls.MAX_ROWS)
+
+    def test_real_log_carries_every_contract_feature(self):
+        for name in FEATURE_NAMES:
+            self.assertIn(name, self.df.columns,
+                          f"collector must emit {name!r}")
+
+    def test_channel_is_present_in_the_log_and_absent_from_the_matrix(self):
+        """(a) of the brief: `channel` is bookkeeping and must be dropped.
+
+        This is the assertion made against REAL data rather than a synthetic
+        stand-in: the collector genuinely writes `channel` on every row, and the
+        fitted matrix genuinely must not contain it.
+        """
+        self.assertIn("channel", self.df.columns)
+        X, _, meta = build_training_matrix(self.df)
+        self.assertEqual(X.shape[1], len(FEATURE_NAMES) + len(TRAIN_EXTRA_NAMES))
+        self.assertNotIn("channel", tuple(meta["fitting_names"]))
+
+        ch = np.asarray(meta["channel"], dtype=np.float64)
+        self.assertGreater(len(np.unique(ch)), 1, "a real log visits many channels")
+        for j in range(X.shape[1]):
+            col = X[:, j]
+            self.assertFalse(np.array_equal(col, ch),
+                             f"column {j} IS the raw channel index")
+            # Also reject a monotone re-encoding of it (a rank, a scaled copy):
+            # anything perfectly correlated with position leaks the same thing.
+            if np.std(col) > 0:
+                r = abs(float(np.corrcoef(col, ch)[0, 1]))
+                self.assertLess(r, 0.99,
+                                f"column {j} ({meta['fitting_names'][j]}) is "
+                                f"{r:.4f}-correlated with the channel index")
+
+    def test_real_rows_are_finite_and_labelled(self):
+        X, y, _ = build_training_matrix(self.df)
+        self.assertTrue(np.isfinite(X).all(), "a single NaN poisons the whole fit")
+        self.assertEqual(set(np.unique(y).tolist()) - {0, 1}, set())
+
+    def test_deconvolution_inverts_on_real_pd_bar_values(self):
+        """(b) of the brief, on the dwell/bandwidth pairs a real episode used."""
+        _, _, meta = build_training_matrix(self.df)
+        pdb = np.asarray(meta["pd_bar_next"], dtype=np.float64)
+        self.assertTrue(np.all(pdb > 1e-3), "every real pd_bar exceeds P_fa")
+        rng = np.random.default_rng(0)
+        p_act = rng.uniform(1e-4, 1.0 - 1e-4, pdb.size)
+        back = p_active_from_p_det(p_det_from_p_active(p_act, pdb, 1e-3), pdb, 1e-3)
+        err = float(np.max(np.abs(back - p_act)))
+        self.assertLess(err, 1e-9, f"real-data deconvolution error {err:.2e}")
+
+    def test_scenario_and_seed_columns_enforce_the_split(self):
+        """`agile` never trained on; collection seeds never overlap evaluation."""
+        from agent.policy_learned import TRAIN_SEEDS
+
+        self.assertIn("scenario", self.df.columns)
+        self.assertIn("seed", self.df.columns)
+        self.assertNotIn("agile", set(self.df["scenario"].astype(str)))
+        seeds = {int(s) for s in self.df["seed"]}
+        self.assertTrue(seeds.issubset(set(TRAIN_SEEDS)),
+                        f"collected seeds {sorted(seeds)} must lie in 100-119")
+        self.assertFalse(seeds & set(range(10)),
+                         "evaluation seeds 0-9 must never appear in training logs")
+
+
+class TestTrainedModelOnDisk(unittest.TestCase):
+    """The shipped `models/activity_hgb.joblib`, if `--train` has been run.
+
+    This is the check that the manifest a judge would be shown actually says
+    what the pitch claims: it beats rung 1, on held-out rows, by a recorded
+    margin, with the training set it declares.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from agent.policy_learned import DEFAULT_MODEL_PATH
+
+        cls.path = DEFAULT_MODEL_PATH
+        cls.man_path = ActivityModel.manifest_path(cls.path)
+        if not cls.man_path.exists():
+            raise unittest.SkipTest(
+                f"no manifest at {cls.man_path}; run "
+                "`python -m agent.policy_learned --train`"
+            )
+        cls.man = json.loads(cls.man_path.read_text(encoding="utf-8"))
+
+    def test_manifest_records_the_required_provenance(self):
+        for key in ("feature_names", "sklearn_version", "training_seeds",
+                    "brier_model", "brier_rung1", "n_rows_total",
+                    "n_rows_holdout", "gate_ok", "hgb_params"):
+            self.assertIn(key, self.man, f"manifest must record {key!r}")
+        self.assertEqual(self.man["feature_names"],
+                         list(FEATURE_NAMES + TRAIN_EXTRA_NAMES))
+
+    def test_the_shipped_model_actually_beats_rung1(self):
+        b_m = float(self.man["brier_model"])
+        b_r = float(self.man["brier_rung1"])
+        self.assertLess(b_m, b_r - BRIER_GATE_MARGIN,
+                        f"shipped model Brier {b_m:.5f} does not beat rung-1 "
+                        f"{b_r:.5f}; the gate would force beta=0")
+        self.assertTrue(self.man["gate_ok"])
+        self.assertGreater(int(self.man["n_rows_holdout"]), 1000)
+
+    def test_it_beats_the_base_rate_too_not_just_rung1(self):
+        """Rung 1 on a 1.4%-positive label scores about what a constant
+        base-rate forecast scores, so 'beats rung 1' could in principle mean
+        'beats a straw man'.  It does not: the model also beats the best
+        possible CONSTANT forecast, which is the honest floor."""
+        r = float(self.man["positive_rate"])
+        base = r * (1.0 - r)               # Brier of the constant forecast p = r
+        self.assertLess(float(self.man["brier_model"]), base,
+                        "the model must beat a constant base-rate forecast")
+
+    def test_it_declares_the_held_out_scenario_and_no_evaluation_seeds(self):
+        from agent.policy_learned import TRAIN_SEEDS
+
+        self.assertEqual(self.man["held_out_scenario"], "agile")
+        self.assertNotIn("agile", self.man["training_scenarios"])
+        observed = self.man.get("observed_scenarios")
+        if observed is not None:
+            self.assertNotIn("agile", [s.lower() for s in observed])
+        seeds = self.man.get("observed_seeds")
+        if seeds:
+            self.assertTrue(set(seeds).issubset(set(TRAIN_SEEDS)))
+            self.assertFalse(set(seeds) & set(range(10)))
+
+    def test_loading_it_defaults_to_beta_zero(self):
+        """GUARANTEE 1 on the real artefact: opening the shipped model without
+        asking for the learned path leaves the demo bit-identical to rung 1."""
+        if not self.path.exists():
+            self.skipTest("manifest present but joblib absent")
+        model = ActivityModel.load(self.path)
+        self.assertEqual(model.beta, 0.0)
+
+    def test_beta_zero_on_the_real_model_reproduces_rung1_exactly(self):
+        """The most important assertion in this file.
+
+        Rung 1 currently LOSES to the fair-tuned sweep on POI@60 (DESIGN.md
+        section 11.8).  Rung 2 must therefore be provably incapable of masking
+        that: at beta = 0 the refined belief is not close to rung 1, it IS rung 1,
+        array-equal, on the real fitted estimator rather than a stub.
+        """
+        if not self.path.exists():
+            self.skipTest("manifest present but joblib absent")
+        model = ActivityModel.load(self.path, beta=0.0)
+        rng = np.random.default_rng(1)
+        F = rng.uniform(0.0, 1.0, (256, N_FEATURES))
+        F[:, FEATURE_NAMES.index("n_visits")] = rng.integers(0, 20, 256)
+        out = model.refine(F, 0.010, 1.0e6)
+        self.assertTrue(np.array_equal(out, F[:, FEATURE_NAMES.index("p_rung1")]))
+
+    def test_the_real_model_at_beta_gt_zero_does_move_the_belief(self):
+        """...and the gate is not vacuous: with beta > 0 it changes something."""
+        if not self.path.exists():
+            self.skipTest("manifest present but joblib absent")
+        model = ActivityModel.load(self.path, beta=0.6)
+        if not model.gate_ok:
+            self.skipTest("shipped model failed its own gate; nothing to move")
+        self.assertGreater(model.beta, 0.0)
+        rng = np.random.default_rng(2)
+        F = rng.uniform(0.0, 1.0, (256, N_FEATURES))
+        F[:, FEATURE_NAMES.index("n_visits")] = 8.0     # past the cold-start gate
+        out = model.refine(F, 0.010, 1.0e6)
+        self.assertFalse(np.array_equal(out, F[:, FEATURE_NAMES.index("p_rung1")]))
+        self.assertTrue(np.all((out >= P_CLIP_LO) & (out <= P_CLIP_HI)))
+
+
+class TestSabotagedRealModelTripsTheGate(unittest.TestCase):
+    """A saved model whose estimator predicts 0.5 everywhere must be refused at
+    LOAD time, through the full save/manifest/load path rather than by calling
+    `evaluate_gate` directly."""
+
+    def test_sabotage_is_caught_by_the_manifest_gate_at_load(self):
+        df = synth_log(deterministic=False, seed=21)
+        X, y, meta = build_training_matrix(df)
+        model = ActivityModel(estimator=_Sabotage(), beta=0.9)
+        gate = model.evaluate_gate(X, y, meta["pd_bar_next"],
+                                   p_rung1=meta["p_rung1"])
+        self.assertFalse(gate["gate_ok"])
+        model.manifest = {
+            "brier_model": gate["brier_model"],
+            "brier_rung1": gate["brier_rung1"],
+            "gate_ok": gate["gate_ok"],
+        }
+        with tempfile.TemporaryDirectory() as d:
+            path = model.save(Path(d) / "activity_hgb.joblib")
+            reloaded = ActivityModel.load(path, beta=0.9)
+            self.assertEqual(reloaded.beta, 0.0,
+                             "a sabotaged model must load with beta forced to 0")
+            self.assertFalse(reloaded.gate_ok)
+            # And it stays off however it is attached.
+            from agent.belief import Belief
+            from sim.config import build_grid, build_mission, load_config
+
+            cfg = load_config("sparse")
+            bel = Belief(build_grid(cfg), build_mission(cfg), cfg)
+            bel.n_visits[:] = 9.0
+            reloaded.attach_to(bel, 0.9)
+            self.assertTrue(np.array_equal(bel.p_active(1.0), bel.p_effective(1.0)))
+
+
+class TestEndToEndAntiRegression(unittest.TestCase):
+    """The guarantee that matters, on a REAL episode rather than a stub belief.
+
+    Every other anti-regression test here checks `refine()` in isolation.  This
+    one runs the actual `index_learned` policy through the actual evaluator and
+    asserts that at `beta = 0` it produces the same trajectory as rung 1 --
+    same step count, same energy, same POI, same detections.
+
+    That matters more than usual right now.  Rung 1 currently LOSES to the
+    fair-tuned sweep on POI@60 (DESIGN.md section 11.8) and the honest headline
+    is the energy result alone.  If rung 2 could perturb the demo path while
+    nominally disabled, it could quietly paper over that -- so "disabled" has to
+    mean identical, not merely similar.
+
+    Horizon is 4 s, not 60: this is a proof of IDENTITY, and identity does not
+    need a long episode.  A full-horizon run is ~7 s and would blow the suite
+    budget (DESIGN.md section 10).
+    """
+
+    HORIZON_S = 4.0
+    KEYS = ("n_steps", "n_scans", "n_sleeps", "energy_total_j", "poi_60",
+            "n_unique_detections", "coverage_frac")
+
+    @classmethod
+    def setUpClass(cls):
+        from agent.policy_learned import DEFAULT_MODEL_PATH
+
+        if not DEFAULT_MODEL_PATH.exists():
+            raise unittest.SkipTest(
+                f"no trained model at {DEFAULT_MODEL_PATH}; run "
+                "`python -m agent.policy_learned --train`"
+            )
+        import eval.runner as R
+
+        cls.R = R
+        cls.model_path = DEFAULT_MODEL_PATH
+        cls.rung1 = R.run_episode("index", "sparse", 0, horizon_s=cls.HORIZON_S)
+        cls.learned_0 = cls._run_learned(beta=0.0)
+
+    @classmethod
+    def _run_learned(cls, beta: float):
+        """Run `index_learned` at an explicit beta, restoring the factory after.
+
+        Only ever called with beta=0 from the suite -- at beta>0 the model runs
+        on every decision and an episode takes tens of seconds.
+        """
+        model = ActivityModel.load(cls.model_path, beta=beta)
+        orig = cls.R.POLICY_FACTORIES["index_learned"]
+        cls.R.POLICY_FACTORIES["index_learned"] = (
+            lambda cfg, collect_logs=False, **kw:
+            cls.R._LearnedIndexPolicy(model, collect_logs=collect_logs)
+        )
+        try:
+            row = cls.R.run_episode("index_learned", "sparse", 0,
+                                    horizon_s=cls.HORIZON_S)
+        finally:
+            cls.R.POLICY_FACTORIES["index_learned"] = orig
+        row["_beta"] = model.beta
+        row["_gate_ok"] = model.gate_ok
+        return row
+
+    def test_beta_zero_reproduces_rung1_exactly(self):
+        for k in self.KEYS:
+            self.assertEqual(
+                self.rung1[k], self.learned_0[k],
+                f"beta=0 changed {k!r}: rung1={self.rung1[k]!r} "
+                f"learned={self.learned_0[k]!r} -- the learned path must be a "
+                "no-op when disabled",
+            )
+
+    def test_beta_zero_is_what_the_default_load_gives(self):
+        self.assertEqual(self.learned_0["_beta"], 0.0)
+
+    def test_the_learned_path_is_not_secretly_inert(self):
+        """A no-op at beta=0 is only meaningful if beta>0 does something.
+
+        Otherwise this whole class would pass on a model that never ran at all
+        -- which is exactly the failure mode `p_active_hat` exists to prevent
+        (an `ActivityModel` is a dataclass, not a callable, so without that hook
+        `Belief._model_p_active` returns None and rung 2 silently does nothing).
+
+        Checked through the belief rather than by running a second episode: at
+        beta=0.6 the model is invoked on every decision and costs ~19 ms a call
+        (a 3-fold isotonic-calibrated HGB ensemble has a ~13 ms floor per
+        `predict_proba` regardless of row count), so a comparison episode takes
+        ~35 s and would blow the whole suite budget on its own.  The full
+        episode-level divergence was verified by hand; see the report.
+        """
+        from agent.belief import Belief
+        from sim.config import build_grid, build_mission, load_config
+
+        model = ActivityModel.load(self.model_path, beta=0.6)
+        if not model.gate_ok:
+            self.skipTest("shipped model failed its Brier gate; beta pinned to 0")
+        self.assertGreater(model.beta, 0.0)
+
+        cfg = load_config("sparse")
+        bel = Belief(build_grid(cfg), build_mission(cfg), cfg)
+        bel.n_visits[:] = 5.0                     # past the cold-start gate
+        model.attach_to(bel, 0.6)
+        p1, pe = bel.p_active(1.0), bel.p_effective(1.0)
+        self.assertFalse(np.array_equal(p1, pe),
+                         "at beta=0.6 the learned belief must move p_effective")
+
+    def test_cold_start_channels_are_untouched_in_a_real_belief(self):
+        """GUARANTEE 2 through the real wiring: a channel with no visits keeps
+        the analytic prior even at beta=0.6."""
+        from agent.belief import Belief
+        from sim.config import build_grid, build_mission, load_config
+
+        model = ActivityModel.load(self.model_path, beta=0.6)
+        if not model.gate_ok:
+            self.skipTest("shipped model failed its Brier gate")
+        cfg = load_config("sparse")
+        bel = Belief(build_grid(cfg), build_mission(cfg), cfg)
+        bel.n_visits[:] = 0.0                     # nothing has been visited yet
+        model.attach_to(bel, 0.6)
+        self.assertTrue(np.array_equal(bel.p_active(1.0), bel.p_effective(1.0)))
+
+
+class TestLeakageGuardIsOnTheFittingPath(unittest.TestCase):
+    """The guard must protect the CODE PATH, not just the CLI entry point."""
+
+    def test_train_activity_model_rejects_an_extra_column(self):
+        df = synth_log(deterministic=False, seed=31)
+        X, y, meta = build_training_matrix(df)
+        # Smuggle the channel index in as one more column.
+        X_bad = np.column_stack([X, np.asarray(meta["channel"], dtype=np.float64)])
+        with self.assertRaises(ValueError) as ctx:
+            train_activity_model(X_bad, y, meta["pd_bar_next"],
+                                 model_kwargs=FAST_MODEL)
+        self.assertIn("columns", str(ctx.exception))
+
+    def test_predict_rejects_an_extra_column(self):
+        model = ActivityModel(estimator=_Constant(0.4))
+        X = np.zeros((4, len(FEATURE_NAMES) + len(TRAIN_EXTRA_NAMES) + 1))
+        with self.assertRaises(ValueError):
+            model.predict_p_det(X)
 
 
 if __name__ == "__main__":

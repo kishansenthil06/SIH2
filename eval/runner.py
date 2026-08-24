@@ -156,6 +156,13 @@ def _f_index_learned(cfg: dict, collect_logs: bool = False, **kw):
     except ImportError as exc:                      # sklearn/joblib absent
         raise PolicyUnavailable(f"agent.policy_learned unavailable: {exc}") from exc
 
+    # NOTE: `learned.enabled` is deliberately NOT consulted here.  Policy
+    # selection in the runner is explicit -- asking for `index_learned` by name
+    # means "the learned variant".  Honouring `enabled: false` would make this
+    # row silently identical to `index`, i.e. an inert ablation row that looks
+    # like a result.  The "off by default" guarantee of DESIGN.md s.8 is about
+    # the plain `index` policy, which never attaches a model at all (see
+    # `_f_index` above) -- not about this explicitly-named variant.
     learned = cfg.get("agent", {}).get("learned", {}) or {}
     path = ROOT / str(learned.get("model_path", "models/activity_hgb.joblib"))
     beta = float(learned.get("beta", 0.0))

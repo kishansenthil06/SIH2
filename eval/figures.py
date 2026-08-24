@@ -6,10 +6,21 @@
 
 Charts, in the order they earn their place on a slide:
 
-1. **energy vs POI** -- THE headline.  Every policy is one point in
-   (energy_total_J, POI@60); the claim "same interception performance at roughly
-   half the scanning energy" is literally the horizontal distance between two
-   dots, with `oracle` drawn as a reference ceiling rather than an optimum.
+1. **energy per detection vs POI** -- THE headline.  Every policy is one point in
+   (energy_total_J / n_unique_detections, POI@60), with `oracle` drawn as a
+   reference ceiling rather than an optimum.
+
+   Two things this chart is built to survive, because both are true today:
+
+   * **The budget is binding**, so every policy spends ~6.0 J and a *total*
+     energy axis collapses the chart to a vertical line.  Energy PER DETECTION
+     is the metric DESIGN.md section 6 defines as the headline, and it is the
+     axis on which the policies actually separate.
+   * **We win one axis and lose the other.**  Per DESIGN.md section 11.7/11.8,
+     `index` beats the fair-tuned sweep on energy per detection and sits BELOW it
+     on POI@60, and that is a closed result rather than an open bug.  The title,
+     the summary lines and the CSV are all written to render either outcome; the
+     code never asserts a win it did not measure.
 2. **TTFI distributions** -- how *fast* the first intercept happens, not just
    whether it happens.  Always annotated with `n_intercepted/n_total`, because a
    policy can otherwise win the median by ignoring hard emitters.
@@ -64,7 +75,34 @@ POLICY_MARKER: dict = {
     "index": "o", "index_learned": "D", "oracle": "*",
 }
 
-_SPARK = "▁▂▃▄▅▆▇█"
+_SPARK_UNICODE = "▁▂▃▄▅▆▇█"
+_SPARK_ASCII = "_.-~=+*#"
+_BAR_UNICODE = "█"
+_BAR_ASCII = "#"
+
+
+def _stdout_speaks_unicode() -> bool:
+    """Can the current stdout actually encode the block-drawing glyphs?
+
+    On Windows the default console encoding is cp1252, which cannot encode
+    U+2581..U+2588.  Printing the report then raises `UnicodeEncodeError` and
+    takes the whole command down -- and this is the *fallback* path, the one
+    whose entire justification is that it works when nothing else does
+    (DESIGN.md section 10).  A fallback that crashes on the most common
+    developer console is worse than no fallback, so the ramp degrades to ASCII
+    rather than the program degrading to a traceback.
+    """
+    enc = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        _SPARK_UNICODE.encode(enc)
+    except (UnicodeEncodeError, LookupError):
+        return False
+    return True
+
+
+_UNICODE_OK = _stdout_speaks_unicode()
+_SPARK = _SPARK_UNICODE if _UNICODE_OK else _SPARK_ASCII
+_BAR = _BAR_UNICODE if _UNICODE_OK else _BAR_ASCII
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +183,37 @@ def _mean(values) -> float:
     return sum(v) / len(v) if v else float("nan")
 
 
+def _agg(rows: list[dict], *names) -> float:
+    """One number for `names` across `rows`, whichever shape the CSV is in.
+
+    Two shapes reach these charts and they must not be told apart by the caller:
+
+    * `results/runs.csv` -- one row PER SEED, with bare metric columns.  Reduce
+      by taking the median (mean would let the oracle's one 2.999 J/det outlier
+      define the centre; see DESIGN.md section 11).
+    * `results/ablation.csv` -- one PRE-AGGREGATED row per (scenario, policy),
+      whose columns carry a `_mean` / `_median` / `_std` / `_count` suffix.  The
+      reduction has already happened, so the value is read straight out.
+
+    Suffixes are tried in order, so a `_median` column wins over a `_mean` one.
+    Returns NaN when nothing matches -- NaN is carried through and rendered, not
+    swallowed (`random` genuinely has no energy-per-detection).
+    """
+    keys: list[str] = []
+    for n in names:
+        keys += [n, n + "_median", n + "_mean"]
+    vals: list[float] = []
+    for r in rows:
+        v = _get(r, *keys)
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(f):
+            vals.append(f)
+    return _median(vals)
+
+
 def _median(values) -> float:
     v = sorted(_finite(values))
     if not v:
@@ -185,7 +254,7 @@ def sparkline(values, width: int = 40) -> str:
 def bar(value: float, vmax: float, width: int = 30) -> str:
     if not math.isfinite(value) or not math.isfinite(vmax) or vmax <= 0:
         return ""
-    return "█" * max(0, min(width, int(round(width * value / vmax))))
+    return _BAR * max(0, min(width, int(round(width * value / vmax))))
 
 
 class Report:
@@ -274,10 +343,23 @@ def fig_energy_vs_poi(rows: list[dict], out_dir: Path, plt, rep: Report,
                       poi_key: str = "poi_60") -> "Path | None":
     """One point per policy per scenario, with per-seed spread.
 
-    The sentence this chart has to make sayable is "same interception
-    performance at roughly half the scanning energy", so energy is on x and POI
-    on y: the claim is a horizontal gap at constant height, which is the one
-    reading a viewer cannot mistake.
+    **x is ENERGY PER DETECTION, not total energy.**  This is not cosmetic: the
+    energy budget (`budget_j = 6.0`) is binding for every policy, so every policy
+    spends essentially all 6 J and a total-energy axis collapses the whole chart
+    onto one vertical line -- the 62.6% claim becomes literally invisible.
+    `energy_total_J / n_unique_detections` is the headline metric DESIGN.md
+    section 6 actually defines, and it is the axis on which the policies differ.
+
+    **Median, not mean** (DESIGN.md section 11 / the oracle outlier): one oracle
+    seed scores 2.999 J/det against ~0.09 elsewhere, and a mean over 10 seeds
+    would move the reference ceiling by 30x on the strength of one episode.  The
+    error bars are the p10-p90 per-seed spread, so the outlier is still *shown*
+    -- it is just not allowed to define the centre.
+
+    **NaN is a result, not a gap.**  `random` currently scores zero unique
+    detections, so its energy-per-detection is `nan` (a finite energy divided by
+    zero).  Silently dropping it would flatter the field, so it is drawn on a
+    dedicated "no detections" lane at the right edge and labelled.
     """
     scen = scenarios_in(rows)
     table: list[dict] = []
@@ -286,71 +368,170 @@ def fig_energy_vs_poi(rows: list[dict], out_dir: Path, plt, rep: Report,
             e = [_get(r, "energy_total_j", "energy_j", "energy_total") for r in rs]
             p = [_get(r, poi_key, "poi_60", "poi") for r in rs]
             epd = [_get(r, "energy_per_detection_j") for r in rs]
+            n_det = [_get(r, "n_unique_detections", "n_detections") for r in rs]
             table.append({
                 "scenario": s, "policy": pol, "n_seeds": len(rs),
-                "energy_mean_j": _mean(e), "energy_p10_j": _quantile(e, 0.1),
+                # Headline axis.
+                "epd_median_j": _median(epd),
+                "epd_p10_j": _quantile(epd, 0.1),
+                "epd_p90_j": _quantile(epd, 0.9),
+                "epd_n_finite": len(_finite(epd)),
+                # Kept because "did it survive the horizon on budget" is a
+                # separate question the total answers and the ratio does not.
+                "energy_median_j": _median(e),
+                "energy_p10_j": _quantile(e, 0.1),
                 "energy_p90_j": _quantile(e, 0.9),
-                "poi_mean": _mean(p), "poi_p10": _quantile(p, 0.1),
+                "poi_median": _median(p), "poi_p10": _quantile(p, 0.1),
                 "poi_p90": _quantile(p, 0.9),
-                "energy_per_detection_j": _mean(epd),
+                "n_unique_detections_median": _median(n_det),
             })
-    rep.head("1. ENERGY vs POI@60  (headline)")
-    rep.say(f"  {'scenario':<10}{'policy':<16}{'energy J':>10}{'POI':>8}"
-            f"{'J/det':>10}  seeds")
+    rep.head("1. ENERGY PER DETECTION vs POI@60  (headline)")
+    rep.say("  medians over seeds; J/det = energy_total_J / n_unique_detections")
+    rep.say(f"  {'scenario':<10}{'policy':<16}{'J/det':>10}{'POI@60':>9}"
+            f"{'uniq det':>10}{'total J':>9}  seeds")
     for t in table:
-        rep.say(f"  {t['scenario']:<10}{t['policy']:<16}"
-                f"{t['energy_mean_j']:>10.3f}{t['poi_mean']:>8.3f}"
-                f"{t['energy_per_detection_j']:>10.4f}  {t['n_seeds']}")
+        epd = (f"{t['epd_median_j']:>10.4f}" if math.isfinite(t["epd_median_j"])
+               else f"{'nan':>10}")
+        rep.say(f"  {t['scenario']:<10}{t['policy']:<16}{epd}"
+                f"{t['poi_median']:>9.3f}{t['n_unique_detections_median']:>10.1f}"
+                f"{t['energy_median_j']:>9.3f}  {t['n_seeds']}")
     _say_headline(table, rep)
     rep.dump_csv(out_dir / "energy_vs_poi.csv", table)
 
     if plt is None:
         return None
-    fig, axes = plt.subplots(1, max(1, len(scen)), figsize=(5.2 * max(1, len(scen)), 4.6),
+    fig, axes = plt.subplots(1, max(1, len(scen)), figsize=(5.6 * max(1, len(scen)), 4.8),
                              squeeze=False)
     for ax, s in zip(axes[0], scen):
-        for t in [x for x in table if x["scenario"] == s]:
+        sub = [x for x in table if x["scenario"] == s]
+        finite = [x for x in sub if math.isfinite(x["epd_median_j"])]
+        nan_pols = [x for x in sub if not math.isfinite(x["epd_median_j"])]
+        # The "no detections" lane sits one step beyond the worst real value, so
+        # a policy that never detected is visibly off-scale rather than absent.
+        xmax = max([x["epd_p90_j"] for x in finite] + [x["epd_median_j"] for x in finite]
+                   or [1.0])
+        nan_x = xmax * 1.25 if xmax > 0 else 1.0
+
+        # Policies bunch together in the good corner (low energy, high POI), so
+        # a fixed label offset overlaps.  Stagger above/below alternately.
+        order = sorted(range(len(finite)), key=lambda i: finite[i]["epd_median_j"])
+        offset_of = {id(finite[i]): (8, 6 if n % 2 == 0 else -14)
+                     for n, i in enumerate(order)}
+        for t in finite:
             pol = t["policy"]
             ax.errorbar(
-                t["energy_mean_j"], t["poi_mean"],
-                xerr=[[max(0.0, t["energy_mean_j"] - t["energy_p10_j"])],
-                      [max(0.0, t["energy_p90_j"] - t["energy_mean_j"])]],
-                yerr=[[max(0.0, t["poi_mean"] - t["poi_p10"])],
-                      [max(0.0, t["poi_p90"] - t["poi_mean"])]],
+                t["epd_median_j"], t["poi_median"],
+                xerr=[[max(0.0, t["epd_median_j"] - t["epd_p10_j"])],
+                      [max(0.0, t["epd_p90_j"] - t["epd_median_j"])]],
+                yerr=[[max(0.0, t["poi_median"] - t["poi_p10"])],
+                      [max(0.0, t["poi_p90"] - t["poi_median"])]],
                 marker=POLICY_MARKER.get(pol, "o"), markersize=11,
                 color=POLICY_COLOR.get(pol, "#444444"),
                 ecolor=POLICY_COLOR.get(pol, "#444444"), elinewidth=1.0,
                 capsize=3, linestyle="none",
                 label=pol + (" (ceiling)" if pol == "oracle" else ""),
             )
-            ax.annotate(pol, (t["energy_mean_j"], t["poi_mean"]),
-                        textcoords="offset points", xytext=(8, 6), fontsize=8,
+            ax.annotate(pol, (t["epd_median_j"], t["poi_median"]),
+                        textcoords="offset points",
+                        xytext=offset_of[id(t)], fontsize=8,
                         color=POLICY_COLOR.get(pol, "#444444"))
+        for t in nan_pols:
+            pol = t["policy"]
+            ax.plot([nan_x], [t["poi_median"]], marker="x", markersize=11,
+                    color=POLICY_COLOR.get(pol, "#444444"), linestyle="none",
+                    label=f"{pol} (0 detections: J/det undefined)")
+            # Centred above the marker: the "no detections" lane sits at the
+            # right edge, so a right-hand offset would run off the axes.
+            ax.annotate(f"{pol}\nno detections", (nan_x, t["poi_median"]),
+                        textcoords="offset points", xytext=(0, 12), fontsize=8,
+                        ha="center", color=POLICY_COLOR.get(pol, "#444444"))
+        if nan_pols and finite:
+            ax.axvline(nan_x * 0.92, color="#999999", lw=0.8, linestyle="--", alpha=0.7)
+
         ax.set_title(f"{s}" + ("  (held out)" if s == "agile" else ""))
-        ax.set_xlabel("scan energy spent (J)   ← better")
+        ax.set_xlabel("energy per unique detection (J)   ← better")
         ax.set_ylabel("POI@60  (fraction of emitters intercepted)   better →")
         ax.grid(alpha=0.25, linestyle=":")
         ax.set_ylim(-0.02, 1.02)
         # Headroom for the point labels, which otherwise clip at the right edge.
         ax.margins(x=0.22)
-    axes[0][0].legend(fontsize=8, loc="lower right", framealpha=0.9)
-    fig.suptitle("Same interception performance, far less energy", fontsize=13)
-    fig.tight_layout()
+    # Figure-level legend under the axes rather than inside them: the interesting
+    # points cluster low-right (the good corner is low energy / high POI, so an
+    # in-axes legend sat on top of `random` and `index`).
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    seen, h2, l2 = set(), [], []
+    for h, lab in zip(handles, labels):
+        if lab not in seen:
+            seen.add(lab)
+            h2.append(h)
+            l2.append(lab)
+    fig.legend(h2, l2, fontsize=8, loc="lower center", ncol=min(4, len(l2)),
+               frameon=False, bbox_to_anchor=(0.5, 0.0))
+    fig.suptitle(_headline_title(table), fontsize=12)
+    fig.tight_layout(rect=(0, 0.085, 1, 1))
     return _save(fig, out_dir / "energy_vs_poi.png", rep, plt)
 
 
+def _index_vs_baseline(table: list[dict], scenario: str):
+    """`(round_robin_row, index_row)` for one scenario, or `(None, None)`."""
+    rr = next((t for t in table
+               if t["scenario"] == scenario and t["policy"] == "round_robin"), None)
+    ix = next((t for t in table
+               if t["scenario"] == scenario and t["policy"] == "index"), None)
+    return rr, ix
+
+
 def _say_headline(table: list[dict], rep: Report) -> None:
-    """Spell out the actual claim, per scenario, rather than leaving it implied."""
+    """State BOTH axes, including the one we lose.
+
+    As of DESIGN.md section 11.7/11.8 the index policy wins decisively on energy
+    per detection and *loses* to the fair-tuned sweep on POI@60, and section 11.8
+    records that as a closed result rather than an open bug.  So this summary is
+    written to render honestly in either direction: it names the winner on each
+    axis separately and never asserts an outright win.  A chart that can only
+    describe a victory is a chart that will lie the first time we lose.
+    """
     for s in sorted({t["scenario"] for t in table}):
-        rr = next((t for t in table if t["scenario"] == s and t["policy"] == "round_robin"), None)
-        ix = next((t for t in table if t["scenario"] == s and t["policy"] == "index"), None)
+        rr, ix = _index_vs_baseline(table, s)
         if not rr or not ix:
             continue
-        if not (math.isfinite(rr["energy_mean_j"]) and rr["energy_mean_j"] > 0):
+        e_rr, e_ix = rr["epd_median_j"], ix["epd_median_j"]
+        if math.isfinite(e_rr) and math.isfinite(e_ix) and e_rr > 0:
+            delta = (e_rr - e_ix) / e_rr
+            verb = "lower" if delta >= 0 else "HIGHER"
+            rep.say(f"  [{s}] energy/detection: index {e_ix:.3f} vs round_robin "
+                    f"{e_rr:.3f} J  ->  {abs(delta):.1%} {verb}")
+        p_rr, p_ix = rr["poi_median"], ix["poi_median"]
+        if math.isfinite(p_rr) and math.isfinite(p_ix):
+            if p_ix >= p_rr:
+                rep.say(f"  [{s}] POI@60:            index {p_ix:.3f} vs round_robin "
+                        f"{p_rr:.3f}  ->  parity or better")
+            else:
+                rep.say(f"  [{s}] POI@60:            index {p_ix:.3f} vs round_robin "
+                        f"{p_rr:.3f}  ->  BELOW baseline (DESIGN.md s.11.8, "
+                        f"reported not papered over)")
+        rep.say(f"  [{s}] oracle is a REFERENCE CEILING (myopic over one action), "
+                f"not an optimum")
+
+
+def _headline_title(table: list[dict]) -> str:
+    """Figure title that matches whichever way the numbers actually went."""
+    wins_energy, loses_poi = False, False
+    for s in sorted({t["scenario"] for t in table}):
+        rr, ix = _index_vs_baseline(table, s)
+        if not rr or not ix:
             continue
-        ratio = ix["energy_mean_j"] / rr["energy_mean_j"]
-        rep.say(f"  [{s}] index spends {ratio:.0%} of round_robin's energy "
-                f"at POI {ix['poi_mean']:.2f} vs {rr['poi_mean']:.2f}")
+        if (math.isfinite(rr["epd_median_j"]) and math.isfinite(ix["epd_median_j"])
+                and ix["epd_median_j"] < rr["epd_median_j"]):
+            wins_energy = True
+        if (math.isfinite(rr["poi_median"]) and math.isfinite(ix["poi_median"])
+                and ix["poi_median"] < rr["poi_median"]):
+            loses_poi = True
+    if wins_energy and loses_poi:
+        return "Far less energy per detection; POI@60 still below the sweep"
+    if wins_energy:
+        return "Same interception performance, far less energy per detection"
+    return "Energy per detection vs interception rate"
 
 
 # ---------------------------------------------------------------------------
@@ -502,25 +683,37 @@ def fig_ablation(rows: list[dict], out_dir: Path, plt, rep: Report,
     """
     label_of = lambda r: str(_get(r, "variant", "ablation", "arm", "config",
                                   "policy", "name", default="?"))
-    groups: dict[str, list[dict]] = {}
+    # `eval/runner.py --ablate` writes ONE PRE-AGGREGATED ROW per
+    # (scenario, policy) with `_mean`/`_std`/`_count`-suffixed columns, not one
+    # row per seed.  Reading it as if it were raw runs.csv silently produced an
+    # all-NaN chart, because neither `energy_per_detection_j` nor `poi_60` exists
+    # under those bare names.  `_agg` resolves both shapes, so the same function
+    # renders a raw sweep and an aggregated ablation table.
+    groups: dict[tuple[str, str], list[dict]] = {}
     for r in rows:
-        groups.setdefault(label_of(r), []).append(r)
+        groups.setdefault((_scenario_of(r), label_of(r)), []).append(r)
 
     table = []
-    for name, rs in groups.items():
+    for (scen, name), rs in groups.items():
+        n_seeds = _agg(rs, metric + "_count")
         table.append({
-            "variant": name, "n_seeds": len(rs),
-            metric: _mean([_get(r, metric) for r in rs]),
-            "poi_60": _mean([_get(r, "poi_60", "poi") for r in rs]),
-            "energy_total_j": _mean([_get(r, "energy_total_j") for r in rs]),
+            "scenario": scen, "variant": name,
+            "n_seeds": int(n_seeds) if math.isfinite(n_seeds) else len(rs),
+            metric: _agg(rs, metric),
+            "poi_60": _agg(rs, "poi_60", "poi"),
+            "energy_total_j": _agg(rs, "energy_total_j"),
         })
-    table.sort(key=lambda t: (not math.isfinite(t[metric] or float("nan")), t[metric]))
+    table.sort(key=lambda t: (t["scenario"],
+                              not math.isfinite(t[metric] or float("nan")),
+                              t[metric]))
 
     rep.head(f"4. ABLATION -- {metric}")
     vmax = max(_finite([t[metric] for t in table]) or [1.0])
-    rep.say(f"  {'variant':<26}{metric:>16}{'POI@60':>9}")
+    rep.say(f"  {'scenario':<9}{'variant':<26}{metric:>16}{'POI@60':>9}")
     for t in table:
-        rep.say(f"  {t['variant']:<26}{t[metric]:>16.4f}{t['poi_60']:>9.3f}  "
+        val = (f"{t[metric]:>16.4f}" if math.isfinite(t[metric]) else f"{'nan':>16}")
+        poi = (f"{t['poi_60']:>9.3f}" if math.isfinite(t["poi_60"]) else f"{'nan':>9}")
+        rep.say(f"  {t['scenario']:<9}{t['variant']:<26}{val}{poi}  "
                 f"{bar(t[metric], vmax)}")
     rep.dump_csv(out_dir / "ablation.csv", table)
 
@@ -528,15 +721,31 @@ def fig_ablation(rows: list[dict], out_dir: Path, plt, rep: Report,
         return None
     import numpy as np
 
-    fig, ax = plt.subplots(figsize=(max(6.0, 1.1 * len(table)), 4.4))
+    fig, ax = plt.subplots(figsize=(max(6.0, 0.95 * len(table)), 4.6))
     x = np.arange(len(table))
-    ax.bar(x, [t[metric] for t in table], width=0.62,
-           color=[POLICY_COLOR.get(t["variant"], "#4a6fa5") for t in table])
+    # A NaN bar draws nothing at all, which reads as "we omitted this variant".
+    # Draw it as a zero-height bar carrying an explicit label instead, so a
+    # variant that scored no detections stays on the chart as a result.
+    heights = [t[metric] if math.isfinite(t[metric]) else 0.0 for t in table]
+    ax.bar(x, heights, width=0.62,
+           color=[POLICY_COLOR.get(t["variant"], "#4a6fa5") for t in table],
+           hatch=["" if math.isfinite(t[metric]) else "//" for t in table])
+    vtop = max(_finite([t[metric] for t in table]) or [1.0])
     for i, t in enumerate(table):
         if math.isfinite(t[metric]):
             ax.annotate(f"{t[metric]:.3g}", (i, t[metric]), ha="center",
                         va="bottom", fontsize=8)
-    ax.set_xticks(x, [t["variant"] for t in table], rotation=20, ha="right", fontsize=9)
+        else:
+            ax.annotate("no detections\n(undefined)", (i, 0.0), ha="center",
+                        va="bottom", fontsize=7, color="#a04040")
+    ax.set_ylim(0.0, vtop * 1.22)
+    multi = len({t["scenario"] for t in table}) > 1
+    ax.set_xticks(
+        x,
+        [f"{t['variant']}\n({t['scenario']})" if multi else t["variant"]
+         for t in table],
+        rotation=20, ha="right", fontsize=8,
+    )
     ax.set_ylabel(metric + "   ← better")
     ax.set_title("Ablation: every component measured, not asserted")
     ax.grid(alpha=0.25, linestyle=":", axis="y")
@@ -633,8 +842,22 @@ def main(argv=None) -> int:
 
     rep = make_all(Path(args.results_dir), Path(args.out),
                    use_mpl=not args.no_mpl, only=args.only, horizon_s=args.horizon)
-    print(rep)
+    _print_safe(str(rep))
     return 0
+
+
+def _print_safe(text: str) -> None:
+    """Print without ever dying on the console encoding.
+
+    The full report is always written to `figures_report.txt` as UTF-8, so the
+    terminal copy is a convenience; losing a glyph to `?` is acceptable, losing
+    the whole run to `UnicodeEncodeError` is not.
+    """
+    enc = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(text.encode(enc, errors="replace").decode(enc, errors="replace"))
 
 
 if __name__ == "__main__":

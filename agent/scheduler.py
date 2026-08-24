@@ -123,6 +123,12 @@ class Scheduler:
 
         self.deadline_all = self._combined_deadline()
 
+        # (N,) minimum dwell a deadline visit must use on each channel, or None to
+        # disable the requirement.  Populated by the policy via
+        # `set_min_dwell_for()`, because the scheduler deliberately knows nothing
+        # about detection physics -- it enforces constraints, it does not model.
+        self._min_dwell_for = None
+
         self.last_reason: str = "index"
 
     def _combined_deadline(self) -> np.ndarray:
@@ -210,6 +216,18 @@ class Scheduler:
             return self._clamp_sleep(cands, i, t, next_deadline_t), "sleep"
         return cands.action(i), "index"
 
+    def set_min_dwell_for(self, min_dwell_per_channel) -> None:
+        """Tell the scheduler how long a deadline visit must dwell per channel.
+
+        Passed in rather than computed here so the scheduler stays a pure
+        constraint layer: the policy owns the detection model, the scheduler owns
+        the guarantees.  Pass None to disable.
+        """
+        self._min_dwell_for = (
+            None if min_dwell_per_channel is None
+            else np.asarray(min_dwell_per_channel, dtype=np.float64)
+        )
+
     # ------------------------------------------------------------- internals
     def _deadline_override(self, cands, scores, over, pool, feas, tag):
         """Restrict to candidates covering the MOST overdue channel, then argmax."""
@@ -224,6 +242,29 @@ class Scheduler:
             sel = cov & feas          # the covering scan may itself overshoot
         if not sel.any():
             return None               # cannot afford it; fall through to pacing
+
+        # A deadline names WHICH channel, but taking the plain argmax here also
+        # let the reward-RATE score choose the dwell -- and rate always prefers
+        # the shortest action, because duration is its denominator.  The observed
+        # result was a 2 ms look at a -20 dB threat emitter: P_d = 0.004.  The
+        # deadline was satisfied, staleness looked healthy, and priority-1 POI was
+        # exactly zero across every seed.
+        #
+        # Coverage without adequate dwell is not coverage.  So a deadline visit
+        # must also be long enough to actually SEE what it is looking for: require
+        # the dwell to reach `deadline_min_pd` against the assumed SNR of that
+        # channel's priority class, and only then rank by score.  This is the
+        # "a miss is not an absence" argument applied to the scheduler.
+        if self._min_dwell_for is not None:
+            need = self._min_dwell_for[c_star]
+            if need > 0.0:
+                long_enough = sel & (cands.dwell_s >= need - 1e-12)
+                if long_enough.any():
+                    sel = long_enough
+                # If nothing affordable is long enough, fall through with `sel`
+                # unchanged rather than skipping the deadline entirely -- a short
+                # look still refreshes staleness, and the alternative is silently
+                # abandoning the constraint.
         i = int(np.argmax(np.where(sel, scores, -np.inf)))
         return cands.action(i), f"{tag}:ch={c_star}"
 

@@ -161,6 +161,8 @@ class IndexPolicy:
         self.stale_cap = float(acfg["staleness_cap"])
         self.score_mode = str(acfg.get("score_mode", "rate"))
         self.windows_per_bw = int(acfg.get("windows_per_bw", 8))
+        # 0 disables the exploration term and restores pure exploitation.
+        self.info_gain_w = 0.0 if self.greedy else float(acfg.get("info_gain_weight", 0.0))
 
         self.bw_list = np.asarray(
             [int(b) for b in acfg["bw_candidates_mhz"]], dtype=np.int32
@@ -178,6 +180,26 @@ class IndexPolicy:
         for i, bw in enumerate(self.bw_list):
             for j, dw in enumerate(self.dwell_list):
                 self.pd_bar[i, j] = self.belief.pd_bar_for(float(bw) * 1e6, float(dw))
+
+        # Minimum dwell a deadline visit needs on each channel to have a real
+        # chance of seeing that class of emitter.  Without this the reward-rate
+        # score picks the shortest dwell even under a deadline, so the receiver
+        # "covers" a -20 dB threat channel with a 2 ms look at P_d = 0.004.
+        min_pd = float(acfg.get("deadline_min_pd", 0.0))
+        if min_pd > 0.0:
+            pdc = self.belief.pd_bar_by_class          # (n_class, n_bw, n_dwell)
+            dwells = self.dwell_list
+            # Narrowest bandwidth is the most sensitive, so it sets the floor.
+            reach = pdc[:, 0, :] >= min_pd             # (n_class, n_dwell)
+            need_by_class = np.where(
+                reach.any(axis=1),
+                dwells[np.argmax(reach, axis=1)],
+                dwells[-1],                            # unreachable: demand the longest
+            )
+            self._min_dwell_for = need_by_class[self.belief.class_index]
+            self.scheduler.set_min_dwell_for(self._min_dwell_for)
+        else:
+            self._min_dwell_for = None
 
         self._build_candidate_template(grid)
 
@@ -298,6 +320,18 @@ class IndexPolicy:
             (-self.pd_bar[i_bw])[:, None] for i_bw, _n in self._bw_ints
         )
 
+        # Per-class detectability, reshaped once so the hot loop is a single
+        # einsum.  `_pd_by_class[j]` is (n_class, n_dwell) for the j-th bandwidth.
+        pdc = self.belief.pd_bar_by_class          # (n_class, n_bw, n_dwell)
+        self._pd_by_class = tuple(
+            np.ascontiguousarray(pdc[:, i_bw, :]) for i_bw, _n in self._bw_ints
+        )
+        n_cls = pdc.shape[0]
+        self._cls_mask = np.zeros((n_cls, n_grid), dtype=np.float64)
+        self._cls_mask[self.belief.class_index, np.arange(n_grid)] = 1.0
+        self._cls_val = np.empty((n_cls, n_grid), dtype=np.float64)
+        self._cls_cumsum_buf = np.zeros((n_cls, n_grid + 1), dtype=np.float64)
+
     def _enumerate(self, t: float) -> tuple[CandidateSet, np.ndarray]:
         """Vectorised candidate generation via prefix sums.
 
@@ -313,10 +347,38 @@ class IndexPolicy:
         else:
             value = p * w
 
+        # ADDITIVE information gain, not a staleness multiplier.  This distinction
+        # is the whole point (DESIGN.md 11.7): `p*w*(1 + alpha*stale)` is
+        # multiplicative, so an unvisited channel worth p*w = 0.0011 can never
+        # reach an exploited channel's 0.025 no matter how large alpha grows --
+        # which is exactly why sweeping alpha up to 8 made POI *worse* on both
+        # axes.  An unseen channel is worth something because it is unseen,
+        # independently of its (low) prior, so that value has to be added.
+        #
+        # Scale anchor: `L_0`, i.e. "learning about one new channel is worth about
+        # the fixed cost of a scan".  With 2000 channels and 8 emitters a full
+        # 20 MHz discovery sweep is 100 scans for 0.40 J -- 15 of them fit in the
+        # 6 J budget, against round-robin managing 1.25 sweeps at 5 MHz/10 ms.
+        # Novelty decays as 1/(1+visits), so discovery fades into exploitation
+        # rather than being switched off by a threshold.  Uses only the agent's
+        # own visit counts; no truth.
+        if self.info_gain_w > 0.0:
+            value = value + self.info_gain_w / (1.0 + self.belief.n_visits)
+
         # Prefix sums straight into a preallocated buffer whose leading 0 is
         # permanent; `np.concatenate(([0.0], np.cumsum(value)))` allocated twice.
         cs = self._cumsum_buf
         np.cumsum(value, out=cs[1:])
+
+        # Per-priority-class prefix sums, so a candidate's expected gain uses the
+        # detection probability appropriate to the emitters in THAT band.  With one
+        # band-wide `pd_bar` the agent thought a 2 ms scan had P_d ~ 0.28
+        # everywhere; for the -20 dB threat emitters it is 0.004.  It therefore
+        # never chose a dwell above 5 ms and intercepted zero priority-1 emitters.
+        # 4 classes x 200 channels of cumsum per decision is a few microseconds.
+        cls_cs = self._cls_cumsum_buf
+        np.multiply(value[None, :], self._cls_mask, out=self._cls_val)
+        np.cumsum(self._cls_val, axis=1, out=cls_cs[:, 1:])
 
         n_bw, n_dw, n_pk = self._n_bw, self._n_dw, self._n_pk
         n_scan = self._n_scan
@@ -341,11 +403,17 @@ class IndexPolicy:
             if len(picks) < n_pk:
                 picks = picks + [picks[-1]] * (n_pk - len(picks))
             picks_all[j] = picks
-            # outer product pd_bar[bw, :] x window_value[:] -> (n_dwell, n_pick).
-            # The (n_dwell, 1) column is pre-shaped in reset() and the row side
-            # broadcasts as 1-D, so this is two numpy calls rather than five.
-            np.multiply(
-                self._neg_pd_col[j], nwin[picks_all[j]], out=gain_view[j]
+            # Expected gain, summed over priority classes:
+            #   gain[dwell, pick] = SUM_k pd_bar_by_class[k, bw, dwell]
+            #                             * (value of class-k channels in window)
+            # Window SELECTION above still ranks on total value (cheap, and only
+            # a shortlist), but the score every candidate is judged on is exact.
+            pk = picks_all[j]
+            # (n_class, n_pick) class-restricted window sums
+            wk = cls_cs[:, pk + n] - cls_cs[:, pk]
+            # (n_class, n_dwell) x (n_class, n_pick) -> (n_dwell, n_pick)
+            np.einsum(
+                "kd,kp->dp", self._pd_by_class[j], wk, out=gain_view[j], optimize=False
             )
 
         k_lo = self._k_lo_tpl.copy()

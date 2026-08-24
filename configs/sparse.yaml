@@ -6,7 +6,7 @@ seed_note: "seeds are supplied on the CLI; this file is deliberately seed-free"
 
 grid:
   f_start_hz: 2.000e9
-  n_channels: 200
+  n_channels: 2000
   channel_bw_hz: 1.0e6
 
 receiver:
@@ -36,11 +36,11 @@ energy:
 # AGENT-VISIBLE.  Priorities come from intel, never from truth.
 mission:
   priority_bands:
-    - {ch_lo: 40,  ch_hi: 60,  priority: 1}    # threat band
-    - {ch_lo: 120, ch_hi: 150, priority: 2}
-    - {ch_lo: 0,   ch_hi: 200, priority: 3}    # catch-all; least specific
+    - {ch_lo: 400, ch_hi: 600,  priority: 1}    # threat band
+    - {ch_lo: 1200, ch_hi: 1500, priority: 2}
+    - {ch_lo: 0, ch_hi: 2000, priority: 3}    # catch-all; least specific
   weights:     {1: 1.000, 2: 0.300, 3: 0.100}  # JOULES -- see DESIGN.md s.1 'reward must exceed the dwell it requires'
-  deadlines_s: {1: 0.5,   2: 2.0,   3: 10.0}
+  deadlines_s: {1: 30.0,  2: 8.0,   3: 20.0}   # feasible: see DESIGN.md s.7 budget arithmetic
   watch_list: []
   watch_deadline_s: 0.3
 
@@ -48,21 +48,39 @@ mission:
 # SNR placement is what makes the story true: a sweep cannot afford a 100 ms dwell
 # on 200 channels, but an agent that has narrowed to 3 candidates can.
 emitters:
-  - {kind: fixed,  count: 2, channel_range: [40, 60],   n_channels: 1,
+  - {kind: fixed,  count: 2, channel_range: [400, 600],   n_channels: 1,
      snr_db: [-21.0, -18.0], priority: 1, mean_on_s: 0.20, mean_off_s: 8.0, snr_sigma_db: 2.0}
-  - {kind: pulsed, count: 2, channel_range: [120, 150], n_channels: 2,
+  - {kind: pulsed, count: 2, channel_range: [1200, 1500], n_channels: 2,
      snr_db: [-17.0, -14.0], priority: 2, mean_on_s: 0.60, mean_off_s: 3.0, snr_sigma_db: 2.0}
-  - {kind: fixed,  count: 4, channel_range: [0, 200],   n_channels: 1,
+  - {kind: fixed,  count: 4, channel_range: [0, 2000],   n_channels: 1,
      snr_db: [-12.0, -8.0],  priority: 3, mean_on_s: 2.00, mean_off_s: 3.0, snr_sigma_db: 1.0}
 
 agent:
   prior_pi_on: 0.05          # assumed stationary P(active); deliberately not truth
   prior_lam_sum: 1.0         # assumed mixing rate 1/s; deliberately a bit wrong
+  # Per-priority-class priors.  NOT a truth leak: these are standing assumptions
+  # from intel, like the mission priority bands.  A uniform prior made the policy
+  # spend 69.6% of its budget on a band empty 98% of the time -- see DESIGN.md s.3.
+  prior_pi_on_by_priority:   {1: 0.002, 2: 0.027, 3: 0.011}   # P(channel occupied AND active),
+                             # NOT emitter duty cycle -- 4 emitters over 150 routine channels at
+                             # 41%% duty is ~1.1%% of channels live, not 41%%.
+  prior_lam_sum_by_priority: {1: 3.00, 2: 1.00, 3: 0.50}
+  prior_pseudocount: 6.0     # Beta-Bernoulli strength: belief decays toward this
+                             # channel's OWN learned hit rate, not a band-wide constant.
   assumed_snr_mu_db: -15.0   # spec-sheet belief, used for the MARGINAL Pd on misses
   assumed_snr_sigma_db: 5.0
+  # Per-class assumed SNR: the agent is told threat emitters are WEAK, so long
+  # dwells become rational exactly where they are needed.  With one band-wide
+  # value it never chose a dwell above 5 ms and caught zero prio-1 emitters.
+  assumed_snr_mu_db_by_priority: {1: -19.0, 2: -15.0, 3: -10.0}
   alpha_staleness: 0.5
   staleness_t_ref_s: 1.0
   staleness_cap: 20.0
+  info_gain_weight: 0.0        # ADDITIVE novelty value per unseen channel,
+                             # anchored to L_0. See DESIGN.md 11.7/11.8.
+  deadline_min_pd: 0.45      # a deadline visit must be long enough to actually SEE
+                             # the emitter class it is checking -- coverage with too
+                             # short a dwell is not coverage.
   score_mode: rate           # rate | raw  ("raw" is the source doc's literal form)
   bw_candidates_mhz:   [1, 2, 5, 10, 20]
   dwell_candidates_ms: [1, 2, 5, 10, 20, 50, 100, 200]
@@ -70,7 +88,9 @@ agent:
   windows_per_bw: 8
   budget_slack: 0.05
   learned:
-    enabled: false           # rung 2 is OFF by default; demo path == rung 1
+    enabled: false           # advisory only -- the runner selects policies by
+                             # name, so `index` never attaches a model and
+                             # `index_learned` always does. See eval/runner.py.
     beta: 0.6
     min_visits_for_model: 3
     model_path: models/activity_hgb.joblib

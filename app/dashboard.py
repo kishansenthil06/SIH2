@@ -33,6 +33,12 @@ Input schema is `eval.metrics.TRACE_COLUMNS`:
     n_det, det_channels, best_score, chosen_reason, energy_spent_total
 `k_lo`/`k_hi` are not in that schema, so the scanned span is derived from
 `f_center_hz` and `bw_hz` against the grid.
+
+The frequency axis is **2000 channels** tall (DESIGN.md section 11.1) against an
+axes only a few hundred pixels high, so the raster is reduced by an explicit
+priority block-max (`_reduce_rows`) before it reaches `imshow`.  Letting
+matplotlib resample instead deletes most single-channel detections, which are
+the majority -- see the comment on `RENDER_ROWS`.
 """
 from __future__ import annotations
 
@@ -76,6 +82,22 @@ C_BG = (0.05, 0.06, 0.09)
 C_SCAN = (0.16, 0.42, 0.68)     # a channel sat inside a dwell
 C_DET = (1.00, 0.78, 0.20)      # ...and the detector fired on it
 C_TRACE = "#7fd1ff"             # the tuned centre, hopping over time
+
+# Rendered height of the waterfall in image rows.  The grid is 2000 channels
+# tall (DESIGN.md section 11.1) and the axes are only ~400-500 screen pixels, so
+# the raster MUST be reduced before it reaches imshow.  Doing it here, with a
+# priority reduction, rather than letting matplotlib resample:
+#
+#   * `interpolation="nearest"` samples ONE source row in every ~5, so a
+#     single-channel detection -- which is most of them, since the policy's
+#     favourite action is 1 MHz x 1 ms -- disappears about 80% of the time.
+#   * `interpolation="antialiased"` averages instead, which turns one bright
+#     yellow row into a 20%-strength smear that reads as noise.
+#
+# Both silently delete the one thing the demo exists to show.  `_reduce_rows`
+# takes the MAX over each block with detection > scan > background priority, so
+# one detected channel in a block of five still paints a full-strength mark.
+RENDER_ROWS: int = 400
 
 _ASCII_RAMP = " .:-=+*#%@"
 
@@ -166,8 +188,9 @@ def _parse_run_id(run_id: str) -> tuple[str, str]:
     """`(scenario, policy)`.
 
     Only the LABEL depends on the policy, and only the GRID GEOMETRY depends on
-    the scenario -- and all three scenarios share the same 200-channel 1 MHz grid
-    -- so a miss here costs a caption, never a wrong picture.
+    the scenario -- and all three scenarios share the same 2000-channel / 2 GHz
+    1 MHz grid (DESIGN.md section 11.1) -- so a miss here costs a caption, never
+    a wrong picture.
     """
     low = run_id.lower()
     scenario = next((s for s in _SCENARIOS if s in low), "sparse")
@@ -277,35 +300,93 @@ def load_summary(run_id: str, results_dir: Path = RESULTS_DIR) -> dict:
 # ---------------------------------------------------------------------------
 # Waterfall raster
 # ---------------------------------------------------------------------------
+# Raster cell codes.  Deliberately ORDERED so that a plain `maximum` reduction
+# over a block of channels is exactly the priority rule we want: a block
+# containing one detection renders as a detection, a block containing only
+# dwells renders as a dwell, and only a wholly untouched block stays background.
+CELL_BG: int = 0
+CELL_SCAN: int = 1
+CELL_DET: int = 2
+_PALETTE = np.array([C_BG, C_SCAN, C_DET], dtype=np.float32)
+
+
 def build_waterfall(tr: Trace, time_bins: int = TIME_BINS):
-    """`(image, col0, col1)` -- an `(n_channels, time_bins, 3)` RGB raster and the
-    column span each step paints into.
+    """`(codes, col0, col1)` -- an `(n_channels, time_bins)` uint8 code raster and
+    the column span each step paints into.
 
     Painted cumulatively so a frame at step `k` is exactly the first `k` rows of
     the log: the animation is a prefix of the finished picture, never a
     recomputation, which is what keeps it honest and fast.
+
+    The raster holds CELL_* codes rather than RGB.  At 2000 channels an RGB
+    buffer is 3x the memory for no benefit, and -- the actual reason -- colour
+    cannot be reduced by priority, whereas an ordered integer code can.  See
+    `_reduce_rows`.
     """
     n_ch = int(tr.grid.n_channels)
     horizon = max(tr.horizon_s, 1e-6)
-    img = np.tile(np.asarray(C_BG, dtype=np.float32), (n_ch, time_bins, 1))
+    codes = np.full((n_ch, time_bins), CELL_BG, dtype=np.uint8)
     # Column index each step paints into, and the per-step column span of the
     # dwell (a 200 ms dwell is wider than one column).
     col0 = np.clip((tr.t_end - tr.dwell_s) / horizon * time_bins, 0, time_bins - 1).astype(int)
     col1 = np.clip(np.ceil(tr.t_end / horizon * time_bins), 1, time_bins).astype(int)
     col1 = np.maximum(col1, col0 + 1)
-    return img, col0, col1
+    return codes, col0, col1
 
 
-def paint_upto(tr: Trace, img: np.ndarray, col0, col1, upto: int) -> np.ndarray:
-    """Paint steps `[0, upto)` into `img` in place.  Returns `img`."""
-    for i in range(max(0, upto)):
+def paint_range(tr: Trace, codes: np.ndarray, col0, col1,
+                start: int, stop: int) -> np.ndarray:
+    """Paint steps `[start, stop)` into `codes` in place.  Returns `codes`."""
+    for i in range(max(0, start), max(0, min(stop, tr.n))):
         if tr.k_lo[i] < 0:
             continue  # Sleep paints nothing: no dwell, no coverage
-        img[tr.k_lo[i]:tr.k_hi[i], col0[i]:col1[i]] = C_SCAN
+        block = codes[tr.k_lo[i]:tr.k_hi[i], col0[i]:col1[i]]
+        # `maximum` not assignment: a later dwell must not erase an earlier
+        # detection that happened to fall in the same time column.
+        np.maximum(block, CELL_SCAN, out=block)
         for c in tr.detections[i]:
-            if 0 <= c < img.shape[0]:
-                img[int(c), col0[i]:col1[i]] = C_DET
-    return img
+            if 0 <= c < codes.shape[0]:
+                det = codes[int(c), col0[i]:col1[i]]
+                np.maximum(det, CELL_DET, out=det)
+    return codes
+
+
+def paint_upto(tr: Trace, codes: np.ndarray, col0, col1, upto: int) -> np.ndarray:
+    """Paint steps `[0, upto)` into `codes` in place.  Returns `codes`."""
+    return paint_range(tr, codes, col0, col1, 0, upto)
+
+
+def _reduce_rows(codes: np.ndarray, target_rows: int = RENDER_ROWS) -> np.ndarray:
+    """Downsample the channel axis by BLOCK MAX, preserving det > scan > bg.
+
+    A 2000-row raster shown in a ~450 px axes is resampled by matplotlib no
+    matter what we do; the only question is whether we choose the rule or it
+    does.  Its two options both lose the signal: `nearest` throws away four rows
+    in five (so most single-channel detections vanish outright) and
+    `antialiased` averages them into a faint smear.  Taking the max over each
+    block instead means one detected channel among five still renders at full
+    strength -- which is the honest reduction here, because the question the
+    picture answers is "did anything happen in this band?", not "what was the
+    average of this band?".
+
+    The block size is `ceil(n_ch / target_rows)`; the last block is short when
+    the division is not exact, so the tail is padded with background rather than
+    wrapping.  Returns `codes` unchanged when it is already short enough.
+    """
+    n_ch = codes.shape[0]
+    if n_ch <= target_rows:
+        return codes
+    block = int(math.ceil(n_ch / target_rows))
+    n_blocks = int(math.ceil(n_ch / block))
+    pad = n_blocks * block - n_ch
+    if pad:
+        codes = np.vstack([codes, np.full((pad, codes.shape[1]), CELL_BG, np.uint8)])
+    return codes.reshape(n_blocks, block, codes.shape[1]).max(axis=1)
+
+
+def codes_to_rgb(codes: np.ndarray, target_rows: int = RENDER_ROWS) -> np.ndarray:
+    """Reduce, then colour.  `(rows, time_bins, 3)` float32 ready for imshow."""
+    return _PALETTE[_reduce_rows(codes, target_rows)]
 
 
 # ---------------------------------------------------------------------------
@@ -401,15 +482,20 @@ def _load_mpl():
 class _Panel:
     """One run's axes: waterfall, scan trace, reason label, counter box."""
 
-    def __init__(self, ax, tr: Trace, time_bins: int = TIME_BINS):
+    def __init__(self, ax, tr: Trace, time_bins: int = TIME_BINS,
+                 render_rows: int = RENDER_ROWS):
         self.ax, self.tr = ax, tr
-        self.img, self.col0, self.col1 = build_waterfall(tr, time_bins)
+        self.codes, self.col0, self.col1 = build_waterfall(tr, time_bins)
         self.time_bins = time_bins
+        self.render_rows = render_rows
         n_ch = int(tr.grid.n_channels)
 
+        # `extent` still spans the full 2000 channels, so the y-axis reads in
+        # real channel numbers regardless of how many rows the raster was
+        # reduced to -- the downsample is a rendering detail, not a relabelling.
         self.im = ax.imshow(
-            self.img, origin="lower", aspect="auto", interpolation="nearest",
-            extent=(0.0, tr.horizon_s, 0.0, n_ch),
+            codes_to_rgb(self.codes, render_rows), origin="lower", aspect="auto",
+            interpolation="nearest", extent=(0.0, tr.horizon_s, 0.0, n_ch),
         )
         # The scan trace: the tuned centre hopping over time, drawn as steps so
         # the retunes read as jumps rather than as smooth motion they are not.
@@ -445,17 +531,14 @@ class _Panel:
     def draw_upto(self, upto: int):
         upto = max(0, min(upto, self.tr.n))
         if upto < self.painted:      # a loop restart: repaint from scratch
-            self.img[...] = np.asarray(C_BG, dtype=np.float32)
+            self.codes[...] = CELL_BG
             self.painted = 0
-        for i in range(self.painted, upto):
-            if self.tr.k_lo[i] < 0:
-                continue
-            self.img[self.tr.k_lo[i]:self.tr.k_hi[i], self.col0[i]:self.col1[i]] = C_SCAN
-            for c in self.tr.detections[i]:
-                if 0 <= int(c) < self.img.shape[0]:
-                    self.img[int(c), self.col0[i]:self.col1[i]] = C_DET
+        # Only the NEW steps are painted; the raster is cumulative, so a frame
+        # costs O(new steps) rather than O(all steps so far).
+        paint_range(self.tr, self.codes, self.col0, self.col1,
+                    self.painted, upto)
         self.painted = upto
-        self.im.set_data(self.img)
+        self.im.set_data(codes_to_rgb(self.codes, self.render_rows))
 
         self.trace_line.set_data(self._trace_x[:upto], self._trace_y[:upto])
         t = float(self.tr.t_end[upto - 1]) if upto else 0.0
@@ -538,7 +621,7 @@ def render(traces: list[Trace], out: Path, fmt: str = "gif",
     fig.set_dpi(dpi or DPI_ANIM)
     anim = animation.FuncAnimation(fig, update, frames=marks, interval=1000 // fps,
                                    blit=False, repeat=False)
-    writer = _writer(animation, fmt, fps)
+    writer, actual = _writer(animation, fmt, fps)
     if writer is None:  # no encoder at all -> a PNG still demos
         for p in panels:
             p.draw_upto(p.tr.n)
@@ -547,25 +630,33 @@ def render(traces: list[Trace], out: Path, fmt: str = "gif",
         plt.close(fig)
         print(f"[dashboard] no animation writer available; wrote {png}", file=sys.stderr)
         return png
-    if fmt == "mp4" and not out.suffix == ".mp4":
-        out = out.with_suffix(".mp4")
+    # The EXTENSION must follow the writer that was actually selected, not the
+    # format that was asked for.  `--format mp4` on a machine with no ffmpeg
+    # falls back to PillowWriter, and Pillow raises `unknown file extension:
+    # .mp4` -- so the fallback used to fail louder than having no writer at all.
+    out = out.with_suffix("." + actual)
     anim.save(str(out), writer=writer, savefig_kwargs={"facecolor": fig.get_facecolor()})
     plt.close(fig)
     return out
 
 
 def _writer(animation, fmt: str, fps: int):
+    """`(writer, actual_format)`.  `actual_format` may differ from `fmt`.
+
+    Returning the format alongside the writer is what keeps the file extension
+    honest when the requested encoder is unavailable -- see `render`.
+    """
     if fmt == "mp4":
         try:
             if animation.FFMpegWriter.isAvailable():
-                return animation.FFMpegWriter(fps=fps, bitrate=2400)
+                return animation.FFMpegWriter(fps=fps, bitrate=2400), "mp4"
         except Exception:
             pass
         print("[dashboard] ffmpeg not found; falling back to GIF", file=sys.stderr)
     try:
-        return animation.PillowWriter(fps=fps)
+        return animation.PillowWriter(fps=fps), "gif"
     except Exception:
-        return None
+        return None, fmt
 
 
 def _legend(fig, plt):

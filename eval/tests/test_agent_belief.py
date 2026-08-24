@@ -259,9 +259,24 @@ class TestTwoPdDistinction(unittest.TestCase):
         # Ordering: both rise, the strong one far more.
         self.assertGreater(p_marginal, p0)
         self.assertGreater(p_strong, p_marginal)
-        # Rough magnitudes, from p0 = 0.05 with LR 4.4 and LR 1000.
+        # Magnitudes are PRIOR-DEPENDENT, so assert against the prior actually in
+        # force rather than a hard-coded number.  The priors were corrected to
+        # P(channel occupied AND active) -- ~0.011 for a routine channel, not the
+        # 0.40 duty cycle first used (DESIGN.md 11.3) -- and with p0 that low a
+        # single observation of likelihood ratio L can reach at most
+        # p0*L / (p0*L + (1-p0)), i.e. ~0.917 at LR 1000.  A lower prior SHOULD
+        # mean one observation moves the belief less; that is correct inference,
+        # not a weaker detector, so the bound is derived rather than pinned.
+        lr_strong = 1000.0
+        ceiling = p0 * lr_strong / (p0 * lr_strong + (1.0 - p0))
         self.assertLess(p_marginal, 0.30, "marginal detection saturated the belief")
-        self.assertGreater(p_strong, 0.97, "strong detection failed to pin the belief")
+        self.assertGreater(
+            p_strong, 0.9 * ceiling,
+            f"strong detection failed to pin the belief (ceiling from p0={p0:.4g} "
+            f"is {ceiling:.4g})",
+        )
+        # The point of the test: the marginal detection must remain far weaker.
+        self.assertGreater(p_strong, 3.0 * p_marginal)
 
     def test_miss_uses_the_marginal_pd_not_the_reported_snr(self):
         """A 1 ms miss barely moves the belief; a 200 ms miss crushes it.
