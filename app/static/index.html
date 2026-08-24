@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Scan Strategy // ESM Tactical Command & Simulation Platform</title>
+  <meta name="description" content="Energy-aware adaptive spectrum scanning for Electronic Support Measures (ESM). Interactive multi-page platform with mission console, RF scenario studio, AI policy lab, and ablation analytics.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="dark-theme">
+
+  <!-- Top Global Tactical Header -->
+  <header class="app-header" id="app-header">
+    <div class="header-left">
+      <div class="brand-group" id="nav-brand" role="button" tabindex="0">
+        <div class="radar-pulse-icon">
+          <span class="pulse-ring"></span>
+          <span class="pulse-core"></span>
+        </div>
+        <div>
+          <div class="brand-title">SMART SCAN <span class="brand-badge">SIH 2026</span></div>
+          <div class="brand-subtitle">Energy-Aware Adaptive Spectrum Scanning for Electronic Warfare</div>
+        </div>
+      </div>
+
+      <!-- Main Navigation Tabs -->
+      <nav class="main-nav" id="main-nav">
+        <button class="nav-item active" data-page="landing" id="nav-landing">
+          <span class="nav-icon">🌐</span>
+          <span>Overview</span>
+        </button>
+        <button class="nav-item" data-page="dashboard" id="nav-dashboard">
+          <span class="nav-icon">⚡</span>
+          <span>Mission Console</span>
+        </button>
+        <button class="nav-item" data-page="scenarios" id="nav-scenarios">
+          <span class="nav-icon">📡</span>
+          <span>Scenario Studio</span>
+        </button>
+        <button class="nav-item" data-page="policy-lab" id="nav-policy-lab">
+          <span class="nav-icon">🧠</span>
+          <span>AI Policy Lab</span>
+        </button>
+        <button class="nav-item" data-page="analytics" id="nav-analytics">
+          <span class="nav-icon">📊</span>
+          <span>Analytics</span>
+        </button>
+        <button class="nav-item" data-page="audit" id="nav-audit">
+          <span class="nav-icon">🛡️</span>
+          <span>System Audit</span>
+        </button>
+      </nav>
+    </div>
+    
+    <div class="header-right">
+      <div class="status-badge" id="system-status-badge">
+        <span class="status-dot"></span>
+        <span id="system-status-text">ESM ENGINE ONLINE</span>
+      </div>
+
+      <!-- Operator Clearance & Session Pill -->
+      <div class="operator-profile-pill unauthenticated" id="operator-profile-pill">
+        <div class="operator-avatar" id="operator-avatar">GST</div>
+        <div class="operator-info">
+          <span class="operator-name" id="operator-name">Guest / Unauthenticated</span>
+          <span class="operator-role" id="operator-role">ACCESS RESTRICTED</span>
+        </div>
+        <button class="btn-auth-action" id="btn-auth-toggle" title="Switch Operator / Login">
+          <span id="auth-action-label">🔐 LOGIN</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Page Content Container (Dynamic Router Target) -->
+  <div class="page-container" id="page-container">
+
+    <!-- ======================================================== -->
+    <!-- PAGE 1: HERO LANDING PAGE -->
+    <!-- ======================================================== -->
+    <section class="page-view active" id="page-landing">
+      
+      <!-- Hero Banner -->
+      <div class="hero-section glass-panel">
+        <div class="hero-content">
+          <div class="hero-tagline">
+            <span class="pulse-chip">RESTLESS BANDIT POLICY</span>
+            <span>NEXT-GEN ELECTRONIC SUPPORT MEASURES</span>
+          </div>
+          <h1 class="hero-title">
+            Halving Scanning Energy <br>
+            <span class="gradient-text">While Holding Detections Flat</span>
+          </h1>
+          <p class="hero-description">
+            Traditional Electronic Warfare receivers waste energy performing rigid round-robin sweeps over empty spectrum. 
+            <strong>Smart Scan Strategy</strong> replaces brute-force sweeps with an energy-aware Bayesian restless bandit policy that decides 
+            <strong>where to point next, how long to dwell, and when to sleep</strong>.
+          </p>
+
+          <div class="hero-ctas">
+            <button class="btn btn-primary btn-lg" id="hero-btn-console">
+              <span>⚡ LAUNCH MISSION CONSOLE</span>
+            </button>
+            <button class="btn btn-secondary btn-lg" id="hero-btn-scenarios">
+              <span>📡 EXPLORE RF SCENARIOS</span>
+            </button>
+            <button class="btn btn-outline btn-lg" id="hero-btn-login">
+              <span>🔐 SECURITY ACCESS PORTAL</span>
+            </button>
+          </div>
+
+          <!-- Hero KPI Counter Strip -->
+          <div class="hero-kpis">
+            <div class="hero-kpi-item">
+              <div class="hero-kpi-val text-green">48.2%</div>
+              <div class="hero-kpi-lbl">Scanning Energy Saved</div>
+            </div>
+            <div class="hero-kpi-divider"></div>
+            <div class="hero-kpi-item">
+              <div class="hero-kpi-val text-amber">3.6×</div>
+              <div class="hero-kpi-lbl">Faster Threat TTFI</div>
+            </div>
+            <div class="hero-kpi-divider"></div>
+            <div class="hero-kpi-item">
+              <div class="hero-kpi-val text-cyan">0.88</div>
+              <div class="hero-kpi-lbl">POI Intercept Parity</div>
+            </div>
+            <div class="hero-kpi-divider"></div>
+            <div class="hero-kpi-item">
+              <div class="hero-kpi-val">200</div>
+              <div class="hero-kpi-lbl">Channels (2.0-2.2 GHz)</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-visual">
+          <div class="radar-scope-wrapper">
+            <canvas id="hero-radar-canvas" width="420" height="420"></canvas>
+            <div class="radar-scope-overlay">
+              <div class="scope-grid"></div>
+              <div class="scope-text-tl">FREQ: 2.000 - 2.200 GHz</div>
+              <div class="scope-text-tr">BANDIT: RESTLESS</div>
+              <div class="scope-text-bl">SWEEP: ADAPTIVE</div>
+              <div class="scope-text-br">STATUS: TRACKING</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Interactive Guide Card -->
+      <div class="quick-guide-strip glass-panel">
+        <div class="guide-badge">QUICK START GUIDE</div>
+        <div class="guide-steps-grid">
+          <div class="guide-step">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <strong>Authenticate Clearance</strong>
+              <p>Log in with Commander or Evaluator credentials to unlock the operational console.</p>
+            </div>
+          </div>
+          <div class="guide-step">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <strong>Run Head-to-Head</strong>
+              <p>Execute side-by-side simulations of Adaptive Index Bayes vs Round-Robin Sweep on identical seeds.</p>
+            </div>
+          </div>
+          <div class="guide-step">
+            <div class="step-num">3</div>
+            <div class="step-content">
+              <strong>Inspect Explainability</strong>
+              <p>Scrub the timeline and hover over the waterfall to see why each hop or sleep action was chosen.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Policy Rungs Progression Showcase -->
+      <div class="section-container">
+        <div class="section-header">
+          <div class="section-title">POLICY ARCHITECTURE RUNGS</div>
+          <div class="section-subtitle">A layered hierarchy where each rung demonstrates explainable value</div>
+        </div>
+
+        <div class="rungs-grid">
+          
+          <div class="rung-card glass-panel" data-rung="0">
+            <div class="rung-badge">RUNG 0</div>
+            <h3 class="rung-title">Round-Robin Sweep</h3>
+            <p class="rung-role">The Traditional Baseline & Smoke Test</p>
+            <p class="rung-desc">Rigid sequential sweeping across 200 channels. Spends ~90% of energy listening to empty air; vulnerable to agile emitters.</p>
+            <div class="rung-stat">Energy / Det: <strong>~27.4 mJ</strong></div>
+          </div>
+
+          <div class="rung-card glass-panel highlight-rung" data-rung="1">
+            <div class="rung-badge badge-cyan">RUNG 1</div>
+            <h3 class="rung-title">Index Policy (Bayes)</h3>
+            <p class="rung-role">Reward-Rate Over Restless Belief</p>
+            <p class="rung-desc">Closed-form CTMC belief decay + Urkowitz likelihood updates. Picks actions maximizing expected priority detections per joule-second.</p>
+            <div class="rung-stat text-cyan">Energy / Det: <strong>~14.2 mJ (⚡ 48% Saved)</strong></div>
+          </div>
+
+          <div class="rung-card glass-panel highlight-rung-green" data-rung="2">
+            <div class="rung-badge badge-green">RUNG 2</div>
+            <h3 class="rung-title">Learned Activity Model</h3>
+            <p class="rung-role">Calibrated GBDT Classifier</p>
+            <p class="rung-desc">HistGradientBoosting trained on 516k agent visit logs. Predicts future channel activity with Brier score 0.00507, gated against regressions.</p>
+            <div class="rung-stat text-green">Energy / Det: <strong>~13.5 mJ (⚡ 51% Saved)</strong></div>
+          </div>
+
+          <div class="rung-card glass-panel" data-rung="3">
+            <div class="rung-badge badge-purple">RUNG 3</div>
+            <h3 class="rung-title">Clairvoyant Oracle</h3>
+            <p class="rung-role">Theoretical Reference Ceiling</p>
+            <p class="rung-desc">Myopic upper bound with peeking privileges. Provides a reference ceiling to verify that adaptive policies approach optimal efficiency.</p>
+            <div class="rung-stat text-purple">Energy / Det: <strong>~8.2 mJ (Ceiling)</strong></div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Core Features Grid -->
+      <div class="section-container">
+        <div class="features-grid">
+          
+          <div class="feature-card glass-panel">
+            <div class="feature-icon">🛡️</div>
+            <h4>3-Way Architectural Firewall</h4>
+            <p>Ground truth isolation enforced via AST scanning, structural bound method facades (`AgentEnv`), and runtime call-stack inspection.</p>
+          </div>
+
+          <div class="feature-card glass-panel">
+            <div class="feature-icon">🔋</div>
+            <h4>Load-Bearing Energy Physics</h4>
+            <p>Non-zero retuning costs ($L_f |\Delta f|$) eliminate thrashing; idle sleep ($L_{\text{sleep}}$) pacing proves energy reduction mathematically.</p>
+          </div>
+
+          <div class="feature-card glass-panel">
+            <div class="feature-icon">🎯</div>
+            <h4>Urkowitz Energy Detection</h4>
+            <p>Gaussian energy detector curves condition Bayes on reported SNR for detections, and marginal spec-sheet distributions for misses.</p>
+          </div>
+
+          <div class="feature-card glass-panel">
+            <div class="feature-icon">🔍</div>
+            <h4>Explainable AI Telemetry</h4>
+            <p>Every single step decision exposes its explicit reason code (`index`, `deadline:ch=X`, `watchlist:ch=Y`, `budget-pace`, `sleep`).</p>
+          </div>
+
+        </div>
+      </div>
+
+    </section>
+
+
+    <!-- ======================================================== -->
+    <!-- PAGE 2: TACTICAL SECURITY LOGIN -->
+    <!-- ======================================================== -->
+    <section class="page-view" id="page-login">
+      <div class="login-wrapper">
+        
+        <div class="login-card glass-panel">
+          <div class="login-header">
+            <div class="login-security-icon">🔐</div>
+            <h2>ESM SECURE ACCESS TERMINAL</h2>
+            <p>Electronic Warfare Operator Clearance Authorization</p>
+          </div>
+
+          <!-- Security Alert Banner when redirected from protected routes -->
+          <div id="auth-alert-banner" class="auth-alert-banner hidden">
+            <span class="auth-alert-icon">🔒</span>
+            <span id="auth-alert-text">Security Enforcement: Clearance Required. Please authenticate with Operator credentials to access the ESM Mission Console.</span>
+          </div>
+
+          <!-- Quick Access Presets for Fast Judging -->
+          <div class="login-presets">
+            <div class="presets-label">FAST DEMO PRESETS (ONE-CLICK LOGIN):</div>
+            <div class="preset-buttons">
+              <button class="preset-btn" data-role="commander" data-name="Commander V. Vance" data-level="LEVEL 5 - EW COMMAND">
+                <span class="preset-icon">🎖️</span>
+                <span>EW Commander</span>
+              </button>
+              <button class="preset-btn" data-role="specialist" data-name="Dr. Elena Rostova" data-level="LEVEL 4 - ESM SPECIALIST">
+                <span class="preset-icon">🔬</span>
+                <span>ESM Specialist</span>
+              </button>
+              <button class="preset-btn" data-role="evaluator" data-name="Defense Evaluator" data-level="LEVEL 3 - SIH JURY">
+                <span class="preset-icon">📋</span>
+                <span>SIH Evaluator</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="login-divider"><span>OR ENTER CUSTOM CREDENTIALS</span></div>
+
+          <form id="login-form" class="login-form">
+            <div class="form-group">
+              <label for="login-username">Operator Callsign / ID</label>
+              <input type="text" id="login-username" value="Commander V. Vance" class="custom-input" required>
+            </div>
+
+            <div class="form-group">
+              <label for="login-role">Assigned Operational Clearance</label>
+              <select id="login-role" class="custom-select">
+                <option value="LEVEL 5 - EW COMMAND">Level 5 — EW Tactical Commander (Full Control)</option>
+                <option value="LEVEL 4 - ESM SPECIALIST">Level 4 — ESM Systems Specialist (Simulation & Models)</option>
+                <option value="LEVEL 3 - SIH JURY">Level 3 — Evaluation Jury (Audit & Benchmarks)</option>
+                <option value="LEVEL 1 - OBSERVER">Level 1 — General Observer (Read-Only)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="login-pin">Access Authorization Key / PIN</label>
+              <input type="password" id="login-pin" value="••••••••" class="custom-input" required>
+            </div>
+
+            <div class="login-actions">
+              <button type="submit" class="btn btn-primary btn-block">
+                <span>AUTHORIZE ACCESS & ENTER CONSOLE</span>
+              </button>
+            </div>
+          </form>
+
+          <div class="login-footer">
+            <span>SECURE MIL-STD ENCLAVE // FIREWALL VERIFIED // SIH 2026</span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+
+    <!-- ======================================================== -->
+    <!-- PAGE 3: MISSION CONTROL / COMMAND DASHBOARD -->
+    <!-- ======================================================== -->
+    <section class="page-view" id="page-dashboard">
+      
+      <!-- Top Control Bar -->
+      <section class="control-panel glass-panel" id="sim-control-panel">
+        <div class="control-grid">
+          
+          <div class="control-group">
+            <label for="scenario-select">RF Environment Scenario</label>
+            <select id="scenario-select" class="custom-select">
+              <option value="sparse" selected>Sparse (8 Emitters, 4% Occupancy) [Tuning]</option>
+              <option value="dense">Dense (24 Emitters, 15% Occupancy) [Stress]</option>
+              <option value="agile">Agile (14 Emitters, 4 Hoppers, 7% Occ) [Held-Out]</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label for="policy-a-select">Policy A (Adaptive Scan)</label>
+            <select id="policy-a-select" class="custom-select">
+              <option value="index" selected>Index Policy (Rung 1 — Reward-Rate Bayes)</option>
+              <option value="index_learned">Index Learned (Rung 2 — GBDT Model)</option>
+              <option value="greedy">Greedy Baseline (Myopic)</option>
+              <option value="oracle">Clairvoyant Oracle (Ceiling)</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label for="policy-b-select">Policy B (Baseline)</label>
+            <select id="policy-b-select" class="custom-select">
+              <option value="round_robin" selected>Round-Robin Sweep (Rung 0 Baseline)</option>
+              <option value="random">Random Scan Baseline</option>
+              <option value="greedy">Greedy Baseline</option>
+            </select>
+          </div>
+
+          <div class="control-group input-inline-group">
+            <div>
+              <label for="seed-input">Seed</label>
+              <input type="number" id="seed-input" value="0" min="0" max="999" class="custom-input">
+            </div>
+            <div>
+              <label for="horizon-input">Horizon (s)</label>
+              <input type="number" id="horizon-input" value="60" min="10" max="300" step="10" class="custom-input">
+            </div>
+          </div>
+
+          <div class="control-actions">
+            <button id="btn-run-compare" class="btn btn-primary">
+              <span class="btn-icon">⚡</span>
+              <span>RUN HEAD-TO-HEAD</span>
+            </button>
+            <button id="btn-run-single" class="btn btn-secondary">
+              <span>RUN SINGLE (A)</span>
+            </button>
+          </div>
+
+        </div>
+
+        <!-- Seed Quick Presets Bar -->
+        <div class="seed-presets-bar">
+          <span class="presets-hint">Quick Seed Presets:</span>
+          <button class="seed-chip active" data-seed="0">Seed 0 (Standard)</button>
+          <button class="seed-chip" data-seed="1">Seed 1 (Active Burst)</button>
+          <button class="seed-chip" data-seed="2">Seed 2 (Rapid Hop)</button>
+          <button class="seed-chip" data-seed="5">Seed 5 (Threat Stress)</button>
+        </div>
+      </section>
+
+      <!-- Comparison KPI Hero Cards -->
+      <section class="kpi-scoreboard" id="kpi-scoreboard">
+        
+        <div class="kpi-card glass-panel highlight-card" id="kpi-energy-savings">
+          <div class="kpi-tagline">HEADLINE OBJECTIVE</div>
+          <div class="kpi-title">ENERGY PER DETECTION <span class="info-tip" title="Average scanning Joules expended per confirmed unique emitter intercept">ⓘ</span></div>
+          <div class="kpi-main-metric">
+            <span class="kpi-value" id="kpi-savings-val">48.2%</span>
+            <span class="kpi-unit">SAVED</span>
+          </div>
+          <div class="kpi-subtext">
+            Adaptive: <strong id="kpi-e-det-a">14.2 mJ</strong> vs Sweep: <strong id="kpi-e-det-b">27.4 mJ</strong>
+          </div>
+          <div class="kpi-bar-container">
+            <div class="kpi-progress-bar bar-green" id="kpi-savings-bar" style="width: 48%;"></div>
+          </div>
+        </div>
+
+        <div class="kpi-card glass-panel" id="kpi-ttfi">
+          <div class="kpi-tagline">HIGH THREAT INTERCEPTION</div>
+          <div class="kpi-title">TTFI (PRIORITY 1) <span class="info-tip" title="Median Time-To-First-Intercept for rare, high-priority threat radar bursts">ⓘ</span></div>
+          <div class="kpi-main-metric">
+            <span class="kpi-value text-amber" id="kpi-ttfi-val">1.25 s</span>
+            <span class="kpi-unit" id="kpi-ttfi-speedup">3.6x Faster</span>
+          </div>
+          <div class="kpi-subtext">
+            Adaptive: <strong id="kpi-ttfi-a">1.25s</strong> vs Sweep: <strong id="kpi-ttfi-b">4.52s</strong>
+          </div>
+          <div class="kpi-bar-container">
+            <div class="kpi-progress-bar bar-amber" style="width: 78%;"></div>
+          </div>
+        </div>
+
+        <div class="kpi-card glass-panel" id="kpi-poi">
+          <div class="kpi-tagline">DETECTION PROBABILITY</div>
+          <div class="kpi-title">POI @ 60s HORIZON <span class="info-tip" title="Probability of Intercept: Fraction of total active emitters discovered within 60 seconds">ⓘ</span></div>
+          <div class="kpi-main-metric">
+            <span class="kpi-value text-cyan" id="kpi-poi-val">0.88</span>
+            <span class="kpi-unit">PARITY</span>
+          </div>
+          <div class="kpi-subtext">
+            Adaptive: <strong id="kpi-poi-a">87.5%</strong> vs Sweep: <strong id="kpi-poi-b">87.5%</strong>
+          </div>
+          <div class="kpi-bar-container">
+            <div class="kpi-progress-bar bar-cyan" style="width: 88%;"></div>
+          </div>
+        </div>
+
+        <div class="kpi-card glass-panel" id="kpi-budget">
+          <div class="kpi-tagline">ENERGY CONSUMPTION</div>
+          <div class="kpi-title">TOTAL JOULES SPENT <span class="info-tip" title="Total RF scanning + tuning + DSP energy spent relative to the strict 6.0J budget">ⓘ</span></div>
+          <div class="kpi-main-metric">
+            <span class="kpi-value" id="kpi-energy-total">2.84 J</span>
+            <span class="kpi-unit">/ 6.00 J</span>
+          </div>
+          <div class="kpi-subtext">
+            Active Duty: <strong id="kpi-duty-cycle">11.4%</strong> (Paced with Sleep)
+          </div>
+          <div class="kpi-bar-container">
+            <div class="kpi-progress-bar bar-blue" id="kpi-energy-bar" style="width: 47%;"></div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Spectrum Waterfall Visualizers -->
+      <section class="waterfalls-section" id="waterfalls-section">
+        
+        <!-- Playback Controls -->
+        <div class="playback-bar glass-panel">
+          <div class="playback-controls">
+            <button id="btn-play" class="control-btn" title="Play/Pause Simulation">
+              <span id="play-icon">▶</span>
+            </button>
+            <button id="btn-restart" class="control-btn" title="Restart Timeline">
+              <span>↺</span>
+            </button>
+            <div class="time-readout">
+              <span id="time-current">0.00s</span> / <span id="time-total">60.00s</span>
+            </div>
+          </div>
+
+          <div class="timeline-slider-wrap">
+            <input type="range" id="timeline-slider" min="0" max="60" step="0.1" value="0" class="custom-range">
+          </div>
+
+          <div class="speed-controls">
+            <span class="speed-label">SPEED:</span>
+            <button class="speed-btn active" data-speed="1">1x</button>
+            <button class="speed-btn" data-speed="2">2x</button>
+            <button class="speed-btn" data-speed="5">5x</button>
+            <button class="speed-btn" data-speed="10">MAX</button>
+          </div>
+
+          <div class="legend-pills">
+            <span class="leg-pill leg-dwell">■ In Dwell</span>
+            <span class="leg-pill leg-det">■ Detection</span>
+            <span class="leg-pill leg-trace">― Tuner Hop</span>
+            <span class="leg-pill leg-prio1">■ Prio 1 Threat</span>
+          </div>
+        </div>
+
+        <!-- Dual Waterfall Display Panels -->
+        <div class="waterfall-grid">
+          
+          <!-- Waterfall A: Adaptive Policy -->
+          <div class="waterfall-card glass-panel">
+            <div class="waterfall-header">
+              <div class="wf-title-group">
+                <span class="wf-tag tag-adaptive">ADAPTIVE POLICY (A)</span>
+                <h3 id="wf-title-a" class="wf-title">Index Policy (Rung 1)</h3>
+              </div>
+              <div class="wf-stats-mini">
+                <span>Energy: <strong id="wf-energy-a">2.84 J</strong></span>
+                <span>Detections: <strong id="wf-det-a">198</strong></span>
+              </div>
+            </div>
+            
+            <div class="waterfall-canvas-container" id="container-wf-a">
+              <canvas id="canvas-waterfall-a" width="900" height="280"></canvas>
+              <div class="crosshair-hud" id="hud-wf-a"></div>
+            </div>
+          </div>
+
+          <!-- Waterfall B: Baseline Sweep -->
+          <div class="waterfall-card glass-panel" id="card-wf-b">
+            <div class="waterfall-header">
+              <div class="wf-title-group">
+                <span class="wf-tag tag-baseline">BASELINE SWEEP (B)</span>
+                <h3 id="wf-title-b" class="wf-title">Round-Robin Sweep (Rung 0)</h3>
+              </div>
+              <div class="wf-stats-mini">
+                <span>Energy: <strong id="wf-energy-b">5.82 J</strong></span>
+                <span>Detections: <strong id="wf-det-b">212</strong></span>
+              </div>
+            </div>
+
+            <div class="waterfall-canvas-container" id="container-wf-b">
+              <canvas id="canvas-waterfall-b" width="900" height="280"></canvas>
+              <div class="crosshair-hud" id="hud-wf-b"></div>
+            </div>
+          </div>
+
+        </div>
+
+      </section>
+
+      <!-- Lower Panels: Bayesian Belief Spectrum + Explainable AI Telemetry -->
+      <section class="bottom-section">
+        
+        <!-- Bayesian Belief Distribution -->
+        <div class="belief-panel glass-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span class="title-icon">📊</span>
+              <span>BAYESIAN BELIEF STATE // P(ACTIVE) OVER 200 CHANNELS (2.00 – 2.20 GHz)</span>
+            </div>
+            <div class="band-indicators">
+              <span class="badge-band band-threat">CH 40-60: Threat (Prio 1)</span>
+              <span class="badge-band band-tactical">CH 120-150: Tactical (Prio 2)</span>
+              <span class="badge-band band-routine">CH 0-200: Routine (Prio 3)</span>
+            </div>
+          </div>
+
+          <div class="belief-canvas-wrap">
+            <canvas id="canvas-belief" width="900" height="130"></canvas>
+          </div>
+        </div>
+
+        <!-- Explainable AI (XAI) Telemetry Feed -->
+        <div class="telemetry-panel glass-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span class="title-icon">🔍</span>
+              <span>EXPLAINABLE AI TELEMETRY // WHY DID THE RECEIVER MOVE THERE?</span>
+            </div>
+            <div class="telemetry-filter">
+              <span class="feed-counter" id="step-counter">Step: 0 / 0</span>
+            </div>
+          </div>
+
+          <div class="telemetry-log" id="telemetry-log">
+            <div class="telemetry-empty">Ready. Click "RUN HEAD-TO-HEAD" to start simulation and stream real-time explainability telemetry.</div>
+          </div>
+        </div>
+
+      </section>
+
+    </section>
+
+
+    <!-- ======================================================== -->
+    <!-- PAGE 4: RF SCENARIO & EMITTER STUDIO -->
+    <!-- ======================================================== -->
+    <section class="page-view" id="page-scenarios">
+      
+      <div class="page-header-row">
+        <div>
+          <h2>RF SCENARIO & EMITTER STUDIO</h2>
+          <p class="text-secondary">Inspect scenario configurations, priority bands, emitter Markov models, and Urkowitz detector curves.</p>
+        </div>
+
+        <div class="scenario-tab-buttons" id="scenario-studio-tabs">
+          <button class="scenario-tab-btn active" data-scenario="sparse">SPARSE (4% Occupancy)</button>
+          <button class="scenario-tab-btn" data-scenario="dense">DENSE (15% Occupancy)</button>
+          <button class="scenario-tab-btn" data-scenario="agile">AGILE (7% Hoppers - Held Out)</button>
+        </div>
+      </div>
+
+      <!-- Spectrum Band Strip Visualizer -->
+      <div class="glass-panel spectrum-strip-card">
+        <div class="panel-header">
+          <div class="panel-title">🌈 200-CHANNEL RF ALLOCATION MAP (2.000 – 2.200 GHz)</div>
+        </div>
+        <div class="spectrum-strip-wrap">
+          <div class="spectrum-bar">
+            <div class="bar-seg seg-routine" style="width: 20%;" title="CH 0–39: Routine Band (Priority 3)">CH 0–39 (Routine)</div>
+            <div class="bar-seg seg-threat" style="width: 10%;" title="CH 40–59: High Threat Band (Priority 1, 0.5s Deadline)">CH 40–59 (Threat Prio 1)</div>
+            <div class="bar-seg seg-routine" style="width: 30%;" title="CH 60–119: Routine Band (Priority 3)">CH 60–119 (Routine)</div>
+            <div class="bar-seg seg-tactical" style="width: 15%;" title="CH 120–149: Tactical Pulsed Band (Priority 2, 2.0s Deadline)">CH 120–149 (Tactical Prio 2)</div>
+            <div class="bar-seg seg-routine" style="width: 25%;" title="CH 150–199: Routine Band (Priority 3)">CH 150–199 (Routine)</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="scenario-details-grid">
+        
+        <!-- Scenario Metadata & Mission Cards -->
+        <div class="glass-panel scenario-info-card">
+          <div class="panel-header">
+            <div class="panel-title">📡 GRID GEOMETRY & MISSION SPECS</div>
+          </div>
+          <div class="info-card-body" id="scenario-meta-body">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+
+        <!-- Detector Curve Chart -->
+        <div class="glass-panel scenario-info-card">
+          <div class="panel-header">
+            <div class="panel-title">🎯 URKOWITZ ENERGY DETECTOR CURVE (Pd vs SNR vs DWELL)</div>
+          </div>
+          <div class="info-card-body">
+            <canvas id="canvas-detector-curve" width="600" height="220"></canvas>
+            <div class="chart-caption">Bandwidth = 1 MHz, Pfa = 1e-3. 5 dB SNR ≈ 1 decade of dwell time.</div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Emitter Profiles Table -->
+      <div class="glass-panel scenario-emitters-panel">
+        <div class="panel-header">
+          <div class="panel-title">📻 ACTIVE EMITTER PROFILES & MARKOV ON/OFF DYNAMICS</div>
+        </div>
+        <div class="table-responsive">
+          <table class="data-table" id="table-emitters">
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Count</th>
+                <th>Channels</th>
+                <th>Frequency Span</th>
+                <th>SNR Range (dB)</th>
+                <th>Priority</th>
+                <th>Mean On (s)</th>
+                <th>Mean Off (s)</th>
+                <th>Duty Cycle</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-emitters">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </section>
+
+
+    <!-- ======================================================== -->
+    <!-- PAGE 5: AI POLICY & MODEL LAB -->
+    <!-- ======================================================== -->
+    <section class="page-view" id="page-policy-lab">
+      
+      <div class="page-header-row">
+        <div>
+          <h2>AI POLICY & GBDT ACTIVITY MODEL LAB</h2>
+          <p class="text-secondary">Explore the restless bandit Bayesian belief engine, reward-rate equations, and Rung-2 GBDT classifier.</p>
+        </div>
+        <button class="btn btn-primary" id="btn-trigger-train">
+          <span>🧠 RETRAIN RUNG-2 GBDT MODEL</span>
+        </button>
+      </div>
+
+      <!-- Math Breakdown Grid -->
+      <div class="math-cards-grid">
+        
+        <div class="glass-panel math-card">
+          <div class="math-card-badge">RESTLESS BANDIT EQUATION</div>
+          <h3>Bayesian CTMC Belief Decay</h3>
+          <p class="math-formula">$$p(t + \Delta t) = \pi + (p(t) - \pi) \cdot e^{-\Lambda \cdot \Delta t}$$</p>
+          <p class="math-expl">
+            Channels turn on and off whether we observe them or not. As time since the last visit grows, belief decays toward the stationary prior $\pi$. 
+            Channels observed empty also decay <em>upward</em> back to prior.
+          </p>
+        </div>
+
+        <div class="glass-panel math-card">
+          <div class="math-card-badge">DECISION CRITERIA</div>
+          <h3>Reward-Rate Optimization Index</h3>
+          <p class="math-formula">$$r(t) = \sum_p \left[ w_p \cdot \text{detected}(p,t) \right] - L_d \cdot t_{\text{dwell}} - L_f \cdot |\Delta f| - L_0$$</p>
+          <p class="math-expl">
+            Because $L_f > 0$, frequency thrashing is penalised and nearby channels are grouped. 
+            Because $L_0 > 0$, doing nothing (sleep) is optimal when all scan candidates have negative expected return.
+          </p>
+        </div>
+
+      </div>
+
+      <!-- Interactive CTMC Decay Sandbox -->
+      <div class="glass-panel interactive-decay-card">
+        <div class="panel-header">
+          <div class="panel-title">🧪 INTERACTIVE MARKOV BELIEF DECAY SANDBOX</div>
+        </div>
+        <div class="decay-sandbox-grid">
+          <div class="decay-controls">
+            <div class="form-group">
+              <label for="decay-prior-slider">Stationary Prior $\pi$ (P_on): <span id="val-decay-prior" class="text-cyan">0.05</span></label>
+              <input type="range" id="decay-prior-slider" min="0.01" max="0.5" step="0.01" value="0.05" class="custom-range">
+            </div>
+            <div class="form-group">
+              <label for="decay-rate-slider">Mixing Rate $\Lambda$ ($\lambda_{\text{on}} + \lambda_{\text{off}}$): <span id="val-decay-rate" class="text-cyan">1.0 /s</span></label>
+              <input type="range" id="decay-rate-slider" min="0.1" max="5.0" step="0.1" value="1.0" class="custom-range">
+            </div>
+            <div class="form-group">
+              <label for="decay-p0-slider">Initial Observation Belief $p_0$: <span id="val-decay-p0" class="text-cyan">0.95</span></label>
+              <input type="range" id="decay-p0-slider" min="0.0" max="1.0" step="0.05" value="0.95" class="custom-range">
+            </div>
+          </div>
+          <div class="decay-canvas-wrap">
+            <canvas id="canvas-decay-curve" width="550" height="180"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- GBDT Model Metadata & Feature Contract -->
+      <div class="model-meta-grid">
+        
+        <div class="glass-panel model-spec-card">
+          <div class="panel-header">
+            <div class="panel-title">🌲 RUNG-2 GBDT ACTIVITY CLASSIFIER SPEC</div>
+          </div>
+          <div class="model-spec-body" id="model-spec-body">
+            <!-- Dynamically populated from /api/model/info -->
+          </div>
+        </div>
+
+        <div class="glass-panel feature-contract-card">
+          <div class="panel-header">
+            <div class="panel-title">📋 16-DIMENSIONAL FEATURE CONTRACT (F=16)</div>
+          </div>
+          <div class="table-responsive feature-table-wrap">
+            <table class="data-table" id="table-features">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Feature Name</th>
+                  <th>Description & Operational Context</th>
+                </tr>
+              </thead>
+              <tbody id="tbody-features">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- ======================================================== -->
+    <!-- PAGE 6: ABLATION & ANALYTICS HUB -->
+    <!-- ======================================================== -->
+    <section class="page-view" id="page-analytics">
+      
+      <div class="page-header-row">
+        <div>
+          <h2>EVALUATION BENCHMARKS & ABLATION MATRIX</h2>
+          <p class="text-secondary">Comprehensive head-to-head performance across all policies on identical seeds.</p>
+        </div>
+      </div>
+
+      <!-- Ablation Benchmarks Table View -->
+      <section class="ablation-section glass-panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span class="title-icon">🏆</span>
+            <span>POLICY EVALUATION METRICS TABLE</span>
+          </div>
+          <div class="ablation-legend">
+            <span class="text-cyan">Measured against clairvoyant ceiling across Sparse, Dense, and Agile scenarios.</span>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="data-table" id="ablation-table">
+            <thead>
+              <tr>
+                <th>Policy</th>
+                <th>Scenario</th>
+                <th>POI @ 60s</th>
+                <th>TTFI Prio 1 (s)</th>
+                <th>Coverage (%)</th>
+                <th>Energy Spent (J)</th>
+                <th>Energy / Det (mJ)</th>
+                <th>Headline Performance</th>
+              </tr>
+            </thead>
+            <tbody id="ablation-tbody">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+    </section>
+
+
+    <!-- ======================================================== -->
+    <!-- PAGE 7: SYSTEM AUDIT & FIREWALL INSPECTOR -->
+    <!-- ======================================================== -->
+    <section class="page-view" id="page-audit">
+      
+      <div class="page-header-row">
+        <div>
+          <h2>SYSTEM AUDIT & ARCHITECTURAL FIREWALL</h2>
+          <p class="text-secondary">Verification that agent policies maintain zero peeking privileges into ground truth.</p>
+        </div>
+        <button class="btn btn-primary" id="btn-run-all-tests">
+          <span>🛡️ RUN FULL TEST SUITE (175 TESTS)</span>
+        </button>
+      </div>
+
+      <div class="audit-grid">
+        
+        <div class="glass-panel audit-mechanisms-card">
+          <div class="panel-header">
+            <div class="panel-title">🔒 3-TIER FIREWALL ENFORCEMENT MECHANISMS</div>
+          </div>
+          <div class="mechanisms-body" id="audit-mechanisms-body">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+
+        <div class="glass-panel audit-console-card">
+          <div class="panel-header">
+            <div class="panel-title">💻 TEST EXECUTION TELEMETRY LOG</div>
+          </div>
+          <pre class="test-terminal" id="test-terminal-output">Ready. Click "RUN FULL TEST SUITE" to verify all 175 unit tests and firewall constraints.</pre>
+        </div>
+
+      </div>
+
+    </section>
+
+  </div>
+
+  <!-- Interactive Hover Tooltip -->
+  <div id="spectrum-tooltip" class="spectrum-tooltip"></div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Loading Overlay -->
+  <div id="sim-loading-overlay" class="loading-overlay hidden">
+    <div class="loading-spinner"></div>
+    <div class="loading-text" id="loading-status-text">Simulating EW Environment & Solving Restless Bandit Policy...</div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
