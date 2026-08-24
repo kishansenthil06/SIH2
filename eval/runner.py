@@ -792,9 +792,65 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ablate", action="store_true",
                    help="rebuild results/ablation.csv from an existing runs.csv "
                         "and exit")
-    p.add_argument("--ablation-out", default=str(DEFAULT_ABLATION_CSV))
+    # Defaults to None so it can be derived from --out below.  Defaulting it to
+    # the canonical results/ablation.csv meant a partial run redirected with
+    # --out STILL clobbered the real ablation table; that destroyed the full
+    # sparse+dense sweep twice during the build before it was noticed.
+    p.add_argument("--ablation-out", default=None)
+    p.add_argument("--force", action="store_true",
+                   help="allow --out to overwrite a results file covering more "
+                        "episodes than this run produces")
     p.add_argument("--quiet", action="store_true")
     return p
+
+
+def _ablation_path_for(runs_path, explicit):
+    """Where the ablation table for `runs_path` belongs.
+
+    An explicit --ablation-out always wins.  Otherwise the table is written
+    BESIDE its own runs file rather than to the canonical results/ablation.csv,
+    so a partial run redirected with --out can no longer overwrite the real
+    table.  Only a run that writes the canonical runs.csv writes the canonical
+    ablation.csv -- the two stay in step by construction.
+    """
+    if explicit:
+        return Path(explicit)
+    runs_path = Path(runs_path)
+    if runs_path.resolve() == Path(DEFAULT_RUNS_CSV).resolve():
+        return Path(DEFAULT_ABLATION_CSV)
+    return runs_path.with_suffix(".ablation.csv")
+
+
+def _guard_overwrite(out_path, rows, force: bool) -> None:
+    """Refuse to replace a results file with one covering strictly less.
+
+    `--out` defaults to the canonical results/ablation source, so running a
+    subset of policies (or one scenario) silently replaced a completed matrix
+    with a fragment.  That happened twice during the build; the second time the
+    frontend quietly showed one scenario instead of three.  Losing a 75-episode
+    sweep to a convenience default is not a trade worth making, so this stops
+    rather than warns -- a warning on stderr is exactly what gets missed.
+    """
+    out_path = Path(out_path)
+    if force or not out_path.exists():
+        return
+    try:
+        with open(out_path, "r", encoding="utf-8", newline="") as fh:
+            existing = {(r["policy"], r["scenario"], r["seed"])
+                        for r in csv.DictReader(fh)}
+    except Exception:                                            # noqa: BLE001
+        return                                                   # unreadable: not ours to protect
+    new = {(str(r["policy"]), str(r["scenario"]), str(r["seed"])) for r in rows}
+    lost = existing - new
+    if not lost:
+        return
+    scen = sorted({s for _p, s, _sd in lost})
+    raise SystemExit(
+        f"[runner] refusing to overwrite {out_path}: it holds {len(existing)} "
+        f"episodes and this run would leave {len(new)}, dropping {len(lost)} "
+        f"(scenarios: {', '.join(scen)}).\n"
+        f"          Write elsewhere with --out, or pass --force to overwrite."
+    )
 
 
 def main(argv=None) -> int:
@@ -802,7 +858,8 @@ def main(argv=None) -> int:
     verbose = not args.quiet
 
     if args.ablate:
-        build_ablation(args.out, args.ablation_out, verbose=verbose)
+        build_ablation(args.out, _ablation_path_for(args.out, args.ablation_out),
+                       verbose=verbose)
         return 0
 
     if args.tune:
@@ -851,13 +908,15 @@ def main(argv=None) -> int:
         print("[error] every episode failed", file=sys.stderr)
         return 3
 
+    _guard_overwrite(args.out, rows, bool(getattr(args, "force", False)))
     out = write_runs_csv(rows, args.out)
     if verbose:
         print(f"[runner] {len(rows)} rows -> {out}")
 
     if not args.collect and len({r["policy"] for r in rows}) > 1:
         try:
-            build_ablation(out, args.ablation_out, verbose=verbose)
+            build_ablation(out, _ablation_path_for(out, args.ablation_out),
+                           verbose=verbose)
         except Exception as exc:                                # noqa: BLE001
             print(f"[warn] ablation table not built: {exc}", file=sys.stderr)
     return 0
