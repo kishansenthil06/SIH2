@@ -28,6 +28,9 @@ interface TopNavbarProps {
   onPause: () => void;
   onReset: () => void;
   onStep: () => void;
+  /** Clicking the brand goes home. Optional so this component still works
+   *  standalone; see FloatingStaircaseNav, which is the nav actually rendered. */
+  onGoToLanding?: () => void;
 }
 
 export const TopNavbar = ({
@@ -41,6 +44,7 @@ export const TopNavbar = ({
   onPause,
   onReset,
   onStep,
+  onGoToLanding,
 }: TopNavbarProps) => {
   const [isLogoHovered, setIsLogoHovered] = useState(false);
   const dropdownTimeoutRef = useRef<number | null>(null);
@@ -115,8 +119,17 @@ export const TopNavbar = ({
           onMouseLeave={handleMouseLeave}
         >
           <div 
-            className="flex items-center space-x-3 cursor-pointer group py-1 pr-2 rounded-xl transition-all"
-            onClick={() => onTabChange('command-center')}
+            className="flex items-center space-x-3 cursor-pointer group py-1 pr-2 rounded-xl transition-all focus:outline-none focus:ring-2 focus:ring-rf-green/60"
+            role="link"
+            tabIndex={0}
+            aria-label="Smart Scan - go to landing page"
+            onClick={() => (onGoToLanding ? onGoToLanding() : onTabChange('command-center'))}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onGoToLanding ? onGoToLanding() : onTabChange('command-center');
+              }
+            }}
           >
             {/* Logo Icon Badge */}
             <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-rf-green-dark via-charcoal-800 to-charcoal-900 border border-rf-green-border flex items-center justify-center shadow-glow-green group-hover:scale-105 transition-transform">

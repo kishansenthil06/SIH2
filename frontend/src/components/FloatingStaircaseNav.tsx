@@ -131,10 +131,25 @@ export const FloatingStaircaseNav = ({
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
       >
-        {/* The Floating Logo Capsule */}
+        {/* The Floating Logo Capsule.
+            Clicking the brand goes HOME (the landing page), which is what a logo
+            conventionally does -- it used to jump to the command-center tab, so
+            there was no way back to the landing page except a link buried inside
+            the hover staircase. Falls back to the old behaviour if no
+            `onGoToLanding` was supplied, so the component still works standalone. */}
         <div
-          onClick={() => onTabChange('command-center')}
-          className="flex items-center gap-3 px-3.5 py-2 rounded-2xl bg-charcoal-900/90 backdrop-blur-xl border border-charcoal-700/80 shadow-2xl hover:border-rf-green-border transition-all duration-300 cursor-pointer group hover:shadow-glow-green"
+          onClick={() => (onGoToLanding ? onGoToLanding() : onTabChange('command-center'))}
+          role="link"
+          tabIndex={0}
+          aria-label="Smart Scan - go to landing page"
+          onKeyDown={(e) => {
+            // A div acting as a link still has to be reachable from the keyboard.
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onGoToLanding ? onGoToLanding() : onTabChange('command-center');
+            }
+          }}
+          className="flex items-center gap-3 px-3.5 py-2 rounded-2xl bg-charcoal-900/90 backdrop-blur-xl border border-charcoal-700/80 shadow-2xl hover:border-rf-green-border transition-all duration-300 cursor-pointer group hover:shadow-glow-green focus:outline-none focus:ring-2 focus:ring-rf-green/60"
         >
           {/* Logo Crest */}
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-rf-green-dark via-charcoal-800 to-charcoal-950 border border-rf-green-border flex items-center justify-center shadow-glow-green group-hover:scale-105 transition-transform">
