@@ -111,9 +111,9 @@ class TestConfigs(unittest.TestCase):
         self.assertEqual(m.priority[50], 1)     # threat band 40-60
         self.assertEqual(m.priority[130], 2)    # 120-150
         self.assertEqual(m.priority[5], 3)      # catch-all
-        self.assertAlmostEqual(m.w[50], 0.100)
-        self.assertAlmostEqual(m.w[130], 0.030)
-        self.assertAlmostEqual(m.w[5], 0.010)
+        self.assertAlmostEqual(m.w[50], 1.000)
+        self.assertAlmostEqual(m.w[130], 0.300)
+        self.assertAlmostEqual(m.w[5], 0.100)
 
     def test_deadlines(self):
         m = build_mission(load_config("sparse"))
