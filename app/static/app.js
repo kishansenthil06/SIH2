@@ -57,6 +57,12 @@
     decayPrior: 0.05,
     decayRate: 1.0,
     decayP0: 0.95,
+
+    // Tactical Features State
+    theme: 'cyber',
+    injectedThreat: null,
+    threatMetrics: null,
+    clickedChannel: 48,
   };
 
   // Helper safe float
@@ -68,11 +74,12 @@
 
   // --- DOM ELEMENTS ---
   const el = {
-    // Navigation
+    // Navigation & Themes
     mainNav: document.getElementById('main-nav'),
     navBrand: document.getElementById('nav-brand'),
     navItems: document.querySelectorAll('.nav-item'),
     pageViews: document.querySelectorAll('.page-view'),
+    themeBtns: document.querySelectorAll('.theme-btn'),
 
     // Operator profile
     operatorPill: document.getElementById('operator-profile-pill'),
@@ -81,6 +88,14 @@
     operatorRole: document.getElementById('operator-role'),
     btnAuthToggle: document.getElementById('btn-auth-toggle'),
     authActionLabel: document.getElementById('auth-action-label'),
+
+    // Ambush Alert Banner
+    ambushAlertBanner: document.getElementById('ambush-alert-banner'),
+    ambushThreatChannel: document.getElementById('ambush-threat-channel'),
+    ambushTtfiA: document.getElementById('ambush-ttfi-a'),
+    ambushTtfiB: document.getElementById('ambush-ttfi-b'),
+    ambushSpeedup: document.getElementById('ambush-speedup'),
+    btnClearAmbush: document.getElementById('btn-clear-ambush'),
 
     // Landing Page
     heroBtnConsole: document.getElementById('hero-btn-console'),
@@ -113,6 +128,24 @@
     timeCurrent: document.getElementById('time-current'),
     timeTotal: document.getElementById('time-total'),
     speedBtns: document.querySelectorAll('.speed-btn'),
+
+    // Threat Injector Panel
+    threatPresetChips: document.querySelectorAll('.threat-preset-chip'),
+    threatChannelSlider: document.getElementById('threat-channel-slider'),
+    threatChannelInput: document.getElementById('threat-channel-input'),
+    threatChannelVal: document.getElementById('threat-channel-val'),
+    threatFreqReadout: document.getElementById('threat-freq-readout'),
+    threatPrioSelect: document.getElementById('threat-prio-select'),
+    threatDurationSelect: document.getElementById('threat-duration-select'),
+    btnInjectThreat: document.getElementById('btn-inject-threat'),
+
+    // Quick Inject Popover
+    quickInjectPopover: document.getElementById('quick-inject-popover'),
+    popoverTargetChan: document.getElementById('popover-target-chan'),
+    popoverTargetFreq: document.getElementById('popover-target-freq'),
+    popoverBtnP1: document.getElementById('popover-btn-p1'),
+    popoverBtnP2: document.getElementById('popover-btn-p2'),
+    btnClosePopover: document.getElementById('btn-close-popover'),
     
     // KPI elements
     kpiSavingsVal: document.getElementById('kpi-savings-val'),
@@ -181,9 +214,13 @@
 
   // --- INITIALIZATION ---
   async function init() {
+    restoreTheme();
     restoreSession();
     setupRouter();
     setupEventListeners();
+    setupThemeSwitcher();
+    setupThreatInjector();
+    setupWaterfallClickToInject();
     startHeroRadarAnimation();
     drawDecayCurve();
     await loadStatus();
@@ -191,6 +228,230 @@
     await loadScenarioDetails();
     await loadModelInfo();
     await loadAuditFirewall();
+  }
+
+  // --- TACTICAL COLOR THEME SWITCHER ---
+  function restoreTheme() {
+    try {
+      const savedTheme = localStorage.getItem('esm_theme') || 'cyber';
+      setTheme(savedTheme);
+    } catch (e) {
+      setTheme('cyber');
+    }
+  }
+
+  function setTheme(themeName) {
+    state.theme = themeName;
+    document.body.classList.remove('theme-crt-green', 'theme-flir-amber', 'dark-theme');
+    
+    if (themeName === 'crt') {
+      document.body.classList.add('theme-crt-green');
+    } else if (themeName === 'flir') {
+      document.body.classList.add('theme-flir-amber');
+    } else {
+      document.body.classList.add('dark-theme');
+    }
+
+    if (el.themeBtns) {
+      el.themeBtns.forEach(btn => {
+        if (btn.dataset.theme === themeName) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
+      });
+    }
+
+    try {
+      localStorage.setItem('esm_theme', themeName);
+    } catch (e) {}
+
+    // Redraw canvases to match theme palettes
+    if (state.currentPage === 'dashboard') {
+      drawAllWaterfalls();
+      drawBeliefState(state.currentTime);
+    } else if (state.currentPage === 'policy-lab') {
+      drawDecayCurve();
+    }
+  }
+
+  function setupThemeSwitcher() {
+    if (el.themeBtns) {
+      el.themeBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          setTheme(btn.dataset.theme);
+          showToast(`Tactical Theme Activated: ${btn.title || btn.dataset.theme.toUpperCase()}`, 'info', '🎨');
+        });
+      });
+    }
+  }
+
+  // --- TACTICAL THREAT INJECTION (AMBUSH SIMULATOR) ---
+  function setupThreatInjector() {
+    if (el.threatChannelSlider && el.threatChannelInput) {
+      el.threatChannelSlider.addEventListener('input', e => {
+        const ch = parseInt(e.target.value, 10);
+        el.threatChannelInput.value = ch;
+        updateThreatChannelDisplay(ch);
+      });
+
+      el.threatChannelInput.addEventListener('input', e => {
+        const ch = Math.min(199, Math.max(0, parseInt(e.target.value, 10) || 0));
+        el.threatChannelSlider.value = ch;
+        updateThreatChannelDisplay(ch);
+      });
+    }
+
+    if (el.threatPresetChips) {
+      el.threatPresetChips.forEach(chip => {
+        chip.addEventListener('click', () => {
+          el.threatPresetChips.forEach(c => c.classList.remove('active'));
+          chip.classList.add('active');
+
+          const ch = parseInt(chip.dataset.channel, 10) || 48;
+          const prio = chip.dataset.prio || '1';
+          const dur = chip.dataset.duration || '2.0';
+
+          if (el.threatChannelSlider) el.threatChannelSlider.value = ch;
+          if (el.threatChannelInput) el.threatChannelInput.value = ch;
+          if (el.threatPrioSelect) el.threatPrioSelect.value = prio;
+          if (el.threatDurationSelect) el.threatDurationSelect.value = dur;
+
+          updateThreatChannelDisplay(ch);
+          injectThreat(ch, parseInt(prio, 10), parseFloat(dur), chip.dataset.label || `Hostile Threat (CH ${ch})`);
+        });
+      });
+    }
+
+    if (el.btnInjectThreat) {
+      el.btnInjectThreat.addEventListener('click', () => {
+        const ch = parseInt(el.threatChannelInput.value, 10) || 48;
+        const prio = parseInt(el.threatPrioSelect.value, 10) || 1;
+        const dur = parseFloat(el.threatDurationSelect.value) || 2.0;
+        const label = `Hostile Emitter (CH ${ch}, Prio ${prio})`;
+        injectThreat(ch, prio, dur, label);
+      });
+    }
+
+    if (el.btnClearAmbush) {
+      el.btnClearAmbush.addEventListener('click', clearAmbush);
+    }
+  }
+
+  function updateThreatChannelDisplay(ch) {
+    if (el.threatChannelVal) el.threatChannelVal.textContent = `CH ${ch}`;
+    const freqGhz = (state.fStartHz / 1e9 + (ch * state.channelBwHz) / 1e9).toFixed(3);
+    if (el.threatFreqReadout) el.threatFreqReadout.textContent = `${freqGhz} GHz`;
+  }
+
+  function injectThreat(channel, priority, duration, label) {
+    state.injectedThreat = {
+      channel: channel,
+      priority: priority,
+      duration_s: duration,
+      label: label || `Hostile Threat (CH ${channel})`,
+    };
+
+    const freqGhz = (state.fStartHz / 1e9 + (channel * state.channelBwHz) / 1e9).toFixed(3);
+    showToast(`🚨 THREAT INJECTED: CH ${channel} (${freqGhz} GHz, Priority ${priority})`, 'warn', '🚨');
+    runComparison();
+  }
+
+  function clearAmbush() {
+    state.injectedThreat = null;
+    state.threatMetrics = null;
+    if (el.ambushAlertBanner) el.ambushAlertBanner.classList.add('hidden');
+    showToast('Ambush scenario cleared. Running normal mission baseline.', 'info', 'ℹ️');
+    runComparison();
+  }
+
+  function updateAmbushBanner() {
+    if (!el.ambushAlertBanner) return;
+    if (state.injectedThreat && state.threatMetrics) {
+      const tm = state.threatMetrics;
+      const ch = tm.channel;
+      const freqGhz = (state.fStartHz / 1e9 + (ch * state.channelBwHz) / 1e9).toFixed(3);
+      if (el.ambushThreatChannel) el.ambushThreatChannel.textContent = `CH ${ch} (${freqGhz} GHz)`;
+      
+      const ttfiA = tm.ttfi_a_s !== null ? `${tm.ttfi_a_s.toFixed(2)}s` : 'Searching...';
+      const ttfiB = tm.ttfi_b_s !== null ? `${tm.ttfi_b_s.toFixed(2)}s` : 'MISSED (Blind Sweep)';
+      if (el.ambushTtfiA) el.ambushTtfiA.textContent = ttfiA;
+      if (el.ambushTtfiB) el.ambushTtfiB.textContent = ttfiB;
+
+      const speedupText = tm.speedup ? `${tm.speedup}x Faster` : (tm.intercepted_by_a && !tm.intercepted_by_b ? 'PREEMPTED (Sweep Missed)' : 'PARITY');
+      if (el.ambushSpeedup) el.ambushSpeedup.textContent = speedupText;
+
+      el.ambushAlertBanner.classList.remove('hidden');
+    } else {
+      el.ambushAlertBanner.classList.add('hidden');
+    }
+  }
+
+  // --- WATERFALL CLICK-TO-INJECT POPOVER ---
+  function setupWaterfallClickToInject() {
+    function handleCanvasClick(canvas, e) {
+      const rect = canvas.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+
+      const padLeft = 46;
+      const padBottom = 26;
+      const padTop = 10;
+      const plotH = canvas.height - padTop - padBottom;
+      const plotW = canvas.width - padLeft - 10;
+
+      if (clickX < padLeft || clickX > padLeft + plotW || clickY < padTop || clickY > padTop + plotH) {
+        return;
+      }
+
+      const fracY = 1.0 - (clickY - padTop) / plotH;
+      const ch = Math.min(199, Math.max(0, Math.round(fracY * state.nChannels)));
+      state.clickedChannel = ch;
+
+      showQuickInjectPopover(e.clientX, e.clientY, ch);
+    }
+
+    if (el.canvasA) el.canvasA.addEventListener('click', e => handleCanvasClick(el.canvasA, e));
+    if (el.canvasB) el.canvasB.addEventListener('click', e => handleCanvasClick(el.canvasB, e));
+
+    if (el.btnClosePopover && el.quickInjectPopover) {
+      el.btnClosePopover.addEventListener('click', () => {
+        el.quickInjectPopover.classList.add('hidden');
+      });
+    }
+
+    if (el.popoverBtnP1) {
+      el.popoverBtnP1.addEventListener('click', () => {
+        const ch = state.clickedChannel;
+        if (el.quickInjectPopover) el.quickInjectPopover.classList.add('hidden');
+        injectThreat(ch, 1, 2.0, `Hostile Threat Radar (CH ${ch})`);
+      });
+    }
+
+    if (el.popoverBtnP2) {
+      el.popoverBtnP2.addEventListener('click', () => {
+        const ch = state.clickedChannel;
+        if (el.quickInjectPopover) el.quickInjectPopover.classList.add('hidden');
+        injectThreat(ch, 2, 2.0, `Tactical Missile Seeker (CH ${ch})`);
+      });
+    }
+  }
+
+  function showQuickInjectPopover(clientX, clientY, ch) {
+    if (!el.quickInjectPopover) return;
+    const freqGhz = (state.fStartHz / 1e9 + (ch * state.channelBwHz) / 1e9).toFixed(3);
+
+    if (el.popoverTargetChan) el.popoverTargetChan.textContent = `CH ${ch}`;
+    if (el.popoverTargetFreq) el.popoverTargetFreq.textContent = `${freqGhz} GHz`;
+
+    const popW = 280;
+    const popH = 140;
+    const posX = Math.min(window.innerWidth - popW - 20, clientX + 15);
+    const posY = Math.min(window.innerHeight - popH - 20, clientY + 15);
+
+    el.quickInjectPopover.style.left = `${posX}px`;
+    el.quickInjectPopover.style.top = `${posY}px`;
+    el.quickInjectPopover.classList.remove('hidden');
   }
 
   // --- SESSION RESTORATION ---
@@ -575,6 +836,10 @@
         horizon: parseFloat(el.horizonInput.value) || 60.0,
       };
 
+      if (state.injectedThreat) {
+        payload.injected_threat = state.injectedThreat;
+      }
+
       state.scenario = payload.scenario;
       state.policyA = payload.policy_a;
       state.policyB = payload.policy_b;
@@ -596,9 +861,11 @@
       state.dataA = data.policy_a || { summary: {}, trace: [] };
       state.dataB = data.policy_b || { summary: {}, trace: [] };
       state.comparison = data.comparison || {};
+      state.threatMetrics = data.threat_metrics || null;
 
       updateKPIScoreboard(data);
       updateTitlesAndTags();
+      updateAmbushBanner();
       resetPlayback();
       drawAllWaterfalls();
       drawBeliefState(state.currentTime);
@@ -624,6 +891,10 @@
         seed: parseInt(el.seedInput.value, 10) || 0,
         horizon: parseFloat(el.horizonInput.value) || 60.0,
       };
+
+      if (state.injectedThreat) {
+        payload.injected_threat = state.injectedThreat;
+      }
 
       state.scenario = payload.scenario;
       state.policyA = payload.policy;
@@ -891,6 +1162,30 @@
     ctx.beginPath();
     ctx.arc(playX, padTop, 4, 0, Math.PI * 2);
     ctx.fill();
+
+    // Injected Threat Target Reticle Bracket
+    if (state.injectedThreat) {
+      const tCh = state.injectedThreat.channel;
+      const tY = padTop + plotH * (1.0 - (tCh + 0.5) / state.nChannels);
+      const tBandH = Math.max(4, (plotH / state.nChannels) * 2);
+
+      ctx.fillStyle = 'rgba(255, 23, 68, 0.22)';
+      ctx.fillRect(padLeft, tY - tBandH / 2, plotW, tBandH);
+
+      ctx.strokeStyle = '#ff1744';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 3]);
+      ctx.beginPath();
+      ctx.moveTo(padLeft, tY);
+      ctx.lineTo(padLeft + plotW, tY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = '#ff1744';
+      ctx.font = 'bold 9px JetBrains Mono';
+      ctx.textAlign = 'left';
+      ctx.fillText(`🚨 TARGET [CH ${tCh}]`, padLeft + 10, tY - 4);
+    }
   }
 
   // --- BAYESIAN BELIEF SPECTRUM RENDERER ---
@@ -950,6 +1245,20 @@
       ctx.fillRect(x, y, Math.max(1, barW - 0.5), barH);
     }
 
+    // Highlight Injected Threat Channel Bar
+    if (state.injectedThreat) {
+      const tCh = state.injectedThreat.channel;
+      const tx = padLeft + tCh * barW;
+      ctx.strokeStyle = '#ff1744';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(tx - 2, padTop, Math.max(4, barW + 4), plotH);
+
+      ctx.fillStyle = '#ff1744';
+      ctx.beginPath();
+      ctx.arc(tx + barW / 2, padTop + 4, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -973,6 +1282,29 @@
     if (!trace || trace.length === 0) {
       el.telemetryLog.innerHTML = '<div class="telemetry-empty">Ready. Running scan trace.</div>';
       return;
+    }
+
+    if (state.injectedThreat && state.threatMetrics) {
+      const tm = state.threatMetrics;
+      const ch = tm.channel;
+      const freqGhz = (state.fStartHz / 1e9 + (ch * state.channelBwHz) / 1e9).toFixed(3);
+      const ttfiA = tm.ttfi_a_s !== null ? `${tm.ttfi_a_s.toFixed(2)}s` : 'Searching';
+      const speedup = tm.speedup ? `${tm.speedup}x` : 'Preempted';
+
+      const threatLog = document.createElement('div');
+      threatLog.className = 'telemetry-item prio-threat';
+      threatLog.style.background = 'rgba(255, 23, 68, 0.15)';
+      threatLog.style.borderColor = 'rgba(255, 23, 68, 0.5)';
+      threatLog.innerHTML = `
+        <span class="telemetry-step text-threat font-bold">🚨 AMBUSH</span>
+        <span class="telemetry-time font-bold">${ttfiA}</span>
+        <span class="telemetry-reason text-threat">hostile_preempt</span>
+        <span class="telemetry-action font-mono">
+          CH ${ch} (${freqGhz} GHz) // Intercepted at <strong>${ttfiA}</strong> (<strong class="text-cyan">${speedup} faster</strong> than sweep)
+        </span>
+        <span class="telemetry-energy text-threat">+0.0 mJ</span>
+      `;
+      el.telemetryLog.appendChild(threatLog);
     }
 
     const fragment = document.createDocumentFragment();

@@ -29,10 +29,13 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from sim.config import build_grid, load_config
 from sim.contract import ChannelGrid
 
-ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 RESULTS_DIR = ROOT / "results"
 STEPS_DIR = RESULTS_DIR / "steps"
@@ -160,7 +163,50 @@ def _load_ablation() -> list[dict]:
     return rows
 
 
-def _run_simulation(policy: str, scenario: str, seed: int, horizon: float = 60.0) -> tuple[dict | None, list[dict], str]:
+def _build_threat_override(scenario: str, threat: dict) -> dict:
+    """Builds a valid scenario config override containing an injected hostile emitter."""
+    try:
+        base_cfg = load_config(scenario)
+    except Exception:
+        base_cfg = {"emitters": [], "mission": {"priority_bands": []}, "grid": {"n_channels": 2000}}
+    
+    emitters = [dict(e) for e in base_cfg.get("emitters", [])]
+    base_n = int(base_cfg.get("grid", {}).get("n_channels", 2000))
+    scale = base_n / 200.0 if base_n > 200 else 1.0
+
+    raw_channel = int(threat.get("channel", 48))
+    grid_channel = min(base_n - 1, max(0, int(round(raw_channel * scale))))
+    grid_channel_hi = min(base_n, grid_channel + max(1, int(round(scale))))
+    
+    priority = int(threat.get("priority", 1))
+    duration = float(threat.get("duration_s", 2.0))
+    
+    threat_emitter = {
+        "kind": str(threat.get("kind", "pulsed")),
+        "count": 1,
+        "channel_range": [grid_channel, grid_channel_hi],
+        "snr_db": [8.0, 16.0],
+        "mean_on_s": duration,
+        "mean_off_s": 2.0,
+        "snr_sigma_db": 0.5,
+    }
+    emitters.append(threat_emitter)
+
+    priority_bands = [dict(b) for b in base_cfg.get("mission", {}).get("priority_bands", [])]
+    if priority == 1 and not any(b["ch_lo"] <= grid_channel < b["ch_hi"] and b.get("priority") == 1 for b in priority_bands):
+        priority_bands.append({"ch_lo": grid_channel, "ch_hi": grid_channel_hi, "priority": 1})
+    elif priority == 2 and not any(b["ch_lo"] <= grid_channel < b["ch_hi"] and b.get("priority") in (1, 2) for b in priority_bands):
+        priority_bands.append({"ch_lo": grid_channel, "ch_hi": grid_channel_hi, "priority": 2})
+
+    return {
+        "emitters": emitters,
+        "mission": {
+            "priority_bands": priority_bands,
+        }
+    }
+
+
+def _run_simulation(policy: str, scenario: str, seed: int, horizon: float = 60.0, cfg_overrides: dict | None = None) -> tuple[dict | None, list[dict], str]:
     """Runs a single simulation episode via eval.runner subprocess."""
     run_id = f"{policy}__{scenario}__s{seed}__h{int(round(horizon))}"
     trace_path = STEPS_DIR / f"{run_id}.csv"
@@ -176,6 +222,8 @@ def _run_simulation(policy: str, scenario: str, seed: int, horizon: float = 60.0
         "--trace", str(STEPS_DIR),
         "--jobs", "1",
     ]
+    if cfg_overrides:
+        cmd.extend(["--overrides-json", json.dumps(cfg_overrides)])
     
     proc = subprocess.run(
         cmd,
@@ -522,8 +570,10 @@ class EWRequestHandler(SimpleHTTPRequestHandler):
         scenario = body.get("scenario", "sparse")
         seed = int(body.get("seed", 0))
         horizon = float(body.get("horizon", 60.0))
+        injected_threat = body.get("injected_threat")
 
-        summary, trace, log = _run_simulation(policy, scenario, seed, horizon)
+        cfg_overrides = _build_threat_override(scenario, injected_threat) if injected_threat else None
+        summary, trace, log = _run_simulation(policy, scenario, seed, horizon, cfg_overrides=cfg_overrides)
         run_id = f"{policy}__{scenario}__s{seed}__h{int(round(horizon))}"
         
         self._send_json({
@@ -532,6 +582,7 @@ class EWRequestHandler(SimpleHTTPRequestHandler):
             "scenario": scenario,
             "seed": seed,
             "horizon": horizon,
+            "injected_threat": injected_threat,
             "summary": summary,
             "trace": trace,
             "log": log,
@@ -543,9 +594,11 @@ class EWRequestHandler(SimpleHTTPRequestHandler):
         scenario = body.get("scenario", "sparse")
         seed = int(body.get("seed", 0))
         horizon = float(body.get("horizon", 60.0))
+        injected_threat = body.get("injected_threat")
 
-        summary_a, trace_a, log_a = _run_simulation(policy_a, scenario, seed, horizon)
-        summary_b, trace_b, log_b = _run_simulation(policy_b, scenario, seed, horizon)
+        cfg_overrides = _build_threat_override(scenario, injected_threat) if injected_threat else None
+        summary_a, trace_a, log_a = _run_simulation(policy_a, scenario, seed, horizon, cfg_overrides=cfg_overrides)
+        summary_b, trace_b, log_b = _run_simulation(policy_b, scenario, seed, horizon, cfg_overrides=cfg_overrides)
 
         run_id_a = f"{policy_a}__{scenario}__s{seed}__h{int(round(horizon))}"
         run_id_b = f"{policy_b}__{scenario}__s{seed}__h{int(round(horizon))}"
@@ -557,10 +610,54 @@ class EWRequestHandler(SimpleHTTPRequestHandler):
         
         energy_savings_pct = ((e_per_det_b - e_per_det_a) / e_per_det_b * 100.0) if e_per_det_b > 0 else 0.0
 
+        # Calculate threat interception metrics if threat was injected
+        threat_metrics = None
+        if injected_threat:
+            t_chan = int(injected_threat.get("channel", 48))
+            try:
+                base_cfg = load_config(scenario)
+                base_n = int(base_cfg.get("grid", {}).get("n_channels", 2000))
+            except Exception:
+                base_n = 2000
+            scale = base_n / 200.0 if base_n > 200 else 1.0
+            g_min = min(base_n - 1, max(0, int(round(t_chan * scale))))
+            g_max = min(base_n, g_min + max(1, int(round(scale))))
+
+            ttfi_a = None
+            ttfi_b = None
+            for s in trace_a:
+                if s.get("n_det", 0) > 0 and any(g_min <= c <= g_max or c == t_chan for c in s.get("det_channels", [])):
+                    ttfi_a = s.get("t_start", 0.0)
+                    break
+            for s in trace_b:
+                if s.get("n_det", 0) > 0 and any(g_min <= c <= g_max or c == t_chan for c in s.get("det_channels", [])):
+                    ttfi_b = s.get("t_start", 0.0)
+                    break
+            
+            if ttfi_a is not None and ttfi_b is not None:
+                speedup = round(ttfi_b / max(ttfi_a, 0.05), 1) if ttfi_a > 0 else 10.0
+            elif ttfi_a is not None and ttfi_b is None:
+                speedup = round(horizon / max(ttfi_a, 0.05), 1)
+            else:
+                speedup = None
+
+            threat_metrics = {
+                "channel": t_chan,
+                "priority": int(injected_threat.get("priority", 1)),
+                "label": str(injected_threat.get("label", f"Hostile Threat CH {t_chan}")),
+                "ttfi_a_s": ttfi_a,
+                "ttfi_b_s": ttfi_b,
+                "speedup": speedup,
+                "intercepted_by_a": ttfi_a is not None,
+                "intercepted_by_b": ttfi_b is not None,
+            }
+
         self._send_json({
             "scenario": scenario,
             "seed": seed,
             "horizon": horizon,
+            "injected_threat": injected_threat,
+            "threat_metrics": threat_metrics,
             "policy_a": {
                 "id": policy_a,
                 "run_id": run_id_a,

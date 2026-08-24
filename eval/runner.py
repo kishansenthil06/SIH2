@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import sys
 import time
@@ -473,13 +474,14 @@ def _worker(job: dict) -> dict:
 
 def run_matrix(policies, scenarios, seeds, horizon_s=None, trace_dir=None,
                collect_logs=False, log_dir=None, jobs: int = 1,
-               verbose: bool = True) -> list[dict]:
+               cfg_overrides=None, verbose: bool = True) -> list[dict]:
     """Run the full (policy x scenario x seed) matrix.  Serial or pooled."""
     jobs_list = [
         dict(policy_name=p, scenario=sc, seed=int(sd), horizon_s=horizon_s,
              trace_dir=(str(trace_dir) if trace_dir else None),
              collect_logs=collect_logs,
-             log_dir=(str(log_dir) if log_dir else None))
+             log_dir=(str(log_dir) if log_dir else None),
+             cfg_overrides=cfg_overrides)
         for sc in scenarios for p in policies for sd in seeds
     ]
     n = len(jobs_list)
@@ -793,6 +795,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="rebuild results/ablation.csv from an existing runs.csv "
                         "and exit")
     p.add_argument("--ablation-out", default=str(DEFAULT_ABLATION_CSV))
+    p.add_argument("--overrides-json", default=None,
+                   help="JSON string of config overrides, merged recursively")
     p.add_argument("--quiet", action="store_true")
     return p
 
@@ -800,6 +804,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     verbose = not args.quiet
+    overrides = json.loads(args.overrides_json) if args.overrides_json else None
 
     if args.ablate:
         build_ablation(args.out, args.ablation_out, verbose=verbose)
@@ -836,7 +841,7 @@ def main(argv=None) -> int:
     else:
         seeds = parse_seeds(args.seeds)
         _check_seeds(seeds, collect=False)
-        cfg0 = _build_cfg(scenarios[0], args.horizon)
+        cfg0 = _build_cfg(scenarios[0], args.horizon, overrides)
         policies = tuple(available_policies(_split_list(args.policies), cfg0, verbose))
         if not policies:
             print("[error] no runnable policies", file=sys.stderr)
@@ -845,7 +850,8 @@ def main(argv=None) -> int:
     rows = run_matrix(
         policies, scenarios, seeds, horizon_s=args.horizon,
         trace_dir=args.trace, collect_logs=bool(args.collect),
-        log_dir=args.log_dir, jobs=int(args.jobs), verbose=verbose,
+        log_dir=args.log_dir, jobs=int(args.jobs),
+        cfg_overrides=overrides, verbose=verbose,
     )
     if not rows:
         print("[error] every episode failed", file=sys.stderr)

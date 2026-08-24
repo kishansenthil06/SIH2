@@ -61,6 +61,13 @@
         <span id="system-status-text">ESM ENGINE ONLINE</span>
       </div>
 
+      <!-- Tactical Theme Switcher -->
+      <div class="theme-switcher-pill" id="theme-switcher-pill">
+        <button class="theme-btn active" data-theme="cyber" id="theme-btn-cyber" title="Cyber Navy Dark Mode">🌐 CYBER</button>
+        <button class="theme-btn" data-theme="crt" id="theme-btn-crt" title="CRT Phosphor Green Terminal">📟 CRT</button>
+        <button class="theme-btn" data-theme="flir" id="theme-btn-flir" title="FLIR Night-Vision Amber HUD">🌙 FLIR</button>
+      </div>
+
       <!-- Operator Clearance & Session Pill -->
       <div class="operator-profile-pill unauthenticated" id="operator-profile-pill">
         <div class="operator-avatar" id="operator-avatar">GST</div>
@@ -337,6 +344,20 @@
     <!-- PAGE 3: MISSION CONTROL / COMMAND DASHBOARD -->
     <!-- ======================================================== -->
     <section class="page-view" id="page-dashboard">
+
+      <!-- Tactical Ambush & Threat Alert Banner -->
+      <div class="ambush-alert-banner hidden" id="ambush-alert-banner">
+        <div class="ambush-alert-icon">🚨</div>
+        <div class="ambush-alert-content">
+          <div class="ambush-alert-title">TACTICAL AMBUSH DETECTED // HOSTILE EMITTER ACTIVE</div>
+          <div class="ambush-alert-detail" id="ambush-alert-detail">
+            Hostile Threat Injected on <strong id="ambush-threat-channel">CH 48 (2.048 GHz)</strong> // Priority 1 Burst //
+            Adaptive Intercept: <strong class="text-green" id="ambush-ttfi-a">0.26s</strong> vs Sweep: <strong class="text-red" id="ambush-ttfi-b">4.52s</strong>
+            (<strong class="text-cyan" id="ambush-speedup">17.4x Faster</strong>)
+          </div>
+        </div>
+        <button class="btn btn-sm btn-outline-danger" id="btn-clear-ambush">✕ CLEAR AMBUSH</button>
+      </div>
       
       <!-- Top Control Bar -->
       <section class="control-panel glass-panel" id="sim-control-panel">
@@ -400,6 +421,59 @@
           <button class="seed-chip" data-seed="1">Seed 1 (Active Burst)</button>
           <button class="seed-chip" data-seed="2">Seed 2 (Rapid Hop)</button>
           <button class="seed-chip" data-seed="5">Seed 5 (Threat Stress)</button>
+        </div>
+      </section>
+
+      <!-- Tactical Threat Injection (Ambush Simulator) Panel -->
+      <section class="threat-injector-panel glass-panel" id="threat-injector-panel">
+        <div class="threat-header-row">
+          <div class="threat-panel-title">
+            <span class="threat-icon">🚨</span>
+            <span>TACTICAL THREAT INJECTION // AMBUSH SIMULATOR</span>
+            <span class="threat-badge">LIVE PREEMPTION DEMO</span>
+          </div>
+          <div class="threat-preset-quick">
+            <span class="threat-hint">Quick Ambush Presets:</span>
+            <button class="threat-preset-chip active" data-channel="48" data-prio="1" data-duration="2.0" data-label="Fire-Control Radar (CH 48)">🔴 CH 48 (Fire-Control P1)</button>
+            <button class="threat-preset-chip" data-channel="135" data-prio="2" data-duration="1.5" data-label="Missile Seeker (CH 135)">🟠 CH 135 (Seeker P2)</button>
+            <button class="threat-preset-chip" data-channel="72" data-prio="1" data-duration="2.5" data-label="Agile Jammer (CH 72)">⚡ CH 72 (Threat Jammer)</button>
+            <button class="threat-preset-chip" data-channel="180" data-prio="3" data-duration="3.0" data-label="Surveillance Radar (CH 180)">🟢 CH 180 (Surveillance)</button>
+          </div>
+        </div>
+
+        <div class="threat-controls-grid">
+          <div class="control-group threat-channel-group">
+            <label for="threat-channel-input">Target Channel: <span id="threat-channel-val" class="text-cyan">CH 48</span> (<span id="threat-freq-readout" class="text-amber">2.048 GHz</span>)</label>
+            <div class="channel-input-wrapper">
+              <input type="range" id="threat-channel-slider" min="0" max="199" value="48" class="custom-range">
+              <input type="number" id="threat-channel-input" min="0" max="199" value="48" class="custom-input custom-input-sm">
+            </div>
+          </div>
+
+          <div class="control-group">
+            <label for="threat-prio-select">Threat Priority Class</label>
+            <select id="threat-prio-select" class="custom-select">
+              <option value="1" selected>Priority 1 (Threat Radar — High Weight, 0.5s Target)</option>
+              <option value="2">Priority 2 (Tactical Link — 2.0s Target)</option>
+              <option value="3">Priority 3 (Routine Surveillance)</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label for="threat-duration-select">Burst Duration</label>
+            <select id="threat-duration-select" class="custom-select">
+              <option value="1.0">Short Pulse (1.0s)</option>
+              <option value="2.0" selected>Standard Burst (2.0s)</option>
+              <option value="4.0">Extended Radiating (4.0s)</option>
+            </select>
+          </div>
+
+          <div class="threat-action-wrap">
+            <button id="btn-inject-threat" class="btn btn-danger btn-pulse">
+              <span class="btn-icon">🚨</span>
+              <span>INJECT HOSTILE THREAT</span>
+            </button>
+          </div>
         </div>
       </section>
 
@@ -875,6 +949,23 @@
 
   <!-- Interactive Hover Tooltip -->
   <div id="spectrum-tooltip" class="spectrum-tooltip"></div>
+
+  <!-- Waterfall Click-to-Inject Quick Modal Popover -->
+  <div id="quick-inject-popover" class="quick-inject-popover hidden">
+    <div class="popover-header">
+      <span class="popover-title">🚨 INJECT HOSTILE THREAT HERE</span>
+      <button class="popover-close-btn" id="btn-close-popover">✕</button>
+    </div>
+    <div class="popover-body">
+      <div class="popover-target-info">
+        Selected: <strong id="popover-target-chan" class="text-cyan">CH 48</strong> (<span id="popover-target-freq" class="text-amber">2.048 GHz</span>)
+      </div>
+      <div class="popover-buttons">
+        <button class="btn btn-sm btn-danger" id="popover-btn-p1">🔴 Inject Prio-1 Threat Radar</button>
+        <button class="btn btn-sm btn-warning" id="popover-btn-p2">🟠 Inject Prio-2 Tactical Link</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Toast Notification Container -->
   <div id="toast-container" class="toast-container"></div>
