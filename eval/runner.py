@@ -64,7 +64,8 @@ DEFAULT_SCENARIOS: tuple[str, ...] = ("sparse", "dense")
 HELD_OUT_SCENARIO: str = "agile"
 
 DEFAULT_POLICIES: tuple[str, ...] = (
-    "round_robin", "random", "greedy", "index", "index_learned", "oracle",
+    "round_robin", "random", "greedy", "epsilon_greedy", "index",
+    "index_learned", "oracle",
 )
 
 # Runaway guard.  The index policy takes ~4600 steps over a 60 s horizon; a
@@ -179,6 +180,19 @@ def _f_index_learned(cfg: dict, collect_logs: bool = False, **kw):
     return _LearnedIndexPolicy(model, collect_logs=collect_logs)
 
 
+def _f_epsilon_greedy(cfg: dict, collect_logs: bool = False, **kw):
+    """The classic bandit baseline (`agent/vendor/ml_scheduler.py`).
+
+    Present so DESIGN.md's claim that a *standard* bandit underperforms on a
+    RESTLESS problem is measured rather than asserted.  See
+    `agent/policy_bandit.py` for what the wrapper supplies and why.
+    """
+    from agent.policy_bandit import EpsilonGreedyPolicy
+
+    eps = float(cfg.get("baselines", {}).get("epsilon_greedy", {}).get("epsilon", 0.2))
+    return EpsilonGreedyPolicy(epsilon=eps, collect_logs=collect_logs)
+
+
 def _f_oracle(cfg: dict, **kw):
     from eval.baselines import ClairvoyantGreedy
 
@@ -191,6 +205,7 @@ POLICY_FACTORIES: dict = {
     "greedy": _f_greedy,
     "index": _f_index,
     "index_learned": _f_index_learned,
+    "epsilon_greedy": _f_epsilon_greedy,
     "oracle": _f_oracle,
 }
 

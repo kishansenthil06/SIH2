@@ -677,3 +677,55 @@ invalidate the current results table): rank overdue-ness *relative* to the
 deadline (`stale / deadline`) rather than in absolute seconds, and have the
 enumerator inject a covering candidate for the most-overdue channel so the
 override always has something to select.
+
+### 11.13 The classic bandit baseline: the restless prediction is confirmed
+
+`agent/vendor/ml_scheduler.py` (contributed separately) is a standard
+epsilon-greedy multi-armed bandit over frequency bands. §1 of the source review
+predicts exactly this approach fails here:
+
+> "Bands turn on and off whether or not you are watching. That makes this a
+> RESTLESS multi-armed bandit, not a standard one, and it is exactly why plain
+> epsilon-greedy or UCB underperforms here -- those assume the arms wait for you."
+
+Wired in as the `epsilon_greedy` baseline (`agent/policy_bandit.py`) rather than
+asserted about. 3 policies x 3 scenarios x 5 seeds:
+
+| scenario | policy | POI@60 | unique det | J/detection |
+|---|---|---|---|---|
+| sparse | round_robin | 0.400 | 3.6 | 1.740 |
+| | **epsilon_greedy** | **0.025** | **2.0** | 0.439* |
+| | index | 0.275 | 10.4 | 0.617 |
+| dense | round_robin | 0.350 | 10.8 | 0.589 |
+| | **epsilon_greedy** | **0.050** | 13.8 | 0.348* |
+| | index | **0.400** | 32.0 | 0.192 |
+| agile | round_robin | 0.171 | 2.8 | 2.440 |
+| | **epsilon_greedy** | **0.029** | 1.4 | 0.644* |
+| | index | **0.386** | 9.6 | 0.662 |
+
+**The prediction holds decisively on interception: 6-15x worse POI than the index
+policy**, and worse than a blind sweep on every scenario.
+
+**\*Read those energy figures with the asterisk.** They look competitive and are
+not. `epsilon_greedy` detects **nothing at all on 9 of 15 episodes** (4 of 5 on
+sparse), and energy-per-detection is undefined on a zero-detection episode -- so
+each starred figure is computed from only the minority of seeds that detected
+anything. The sparse number rests on a **single seed**. It also underspends the
+budget (4.6-5.2 J against the 6.0 J the sweep and index both use), because its
+random hopping makes retune, not dwell, its dominant cost.
+
+This is the §11.9 caveat -- "energy per detection can be gamed by harvesting
+cheap detections" -- appearing unprompted in a real baseline, and it is the best
+argument in the project for never quoting that metric without POI beside it.
+
+**Why it fails, mechanically.** `get_hit_rate` is `hits / scans` over the whole
+episode with no decay, so a band busy at t=2 s keeps that score at t=50 s. The
+bandit then camps on it, re-detecting the same few emitters (which is why its
+per-detection energy looks fine) while never discovering the rest (which is why
+POI collapses). `agent/belief.py` differs in one respect that turns out to be
+decisive: `p(t+dt) = pi + (p - pi)*exp(-Lam*dt)`, so information *ages*.
+
+The comparison is deliberately not rigged: the bandit gets the same `(bw, dwell)`
+as the fair-tuned sweep, one band == one full-width scan so every arm is
+reachable in a single action, the same priority-weighted reward the index policy
+optimises, and the same horizon-survival pacing as every other baseline.

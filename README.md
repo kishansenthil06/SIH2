@@ -197,6 +197,30 @@ That conditional is the useful engineering result. Reporting only `dense` and
   never lands on one of 8 emitters in 2000 channels, so that baseline is
   degenerate at this grid width rather than merely weak.
 
+### The classic bandit, measured rather than assumed
+
+The design this project is built on predicts that a *standard* epsilon-greedy
+bandit underperforms on a restless problem, "because those assume the arms wait
+for you". That is now a baseline (`epsilon_greedy`, wrapping the separately
+contributed `agent/vendor/ml_scheduler.py`) instead of a claim:
+
+| scenario | epsilon_greedy POI@60 | index POI@60 |
+|---|---|---|
+| sparse | 0.025 | **0.275** |
+| dense | 0.050 | **0.400** |
+| agile | 0.029 | **0.386** |
+
+**6-15x worse interception**, and worse than a blind sweep everywhere. It detects
+nothing at all on 9 of 15 episodes. Its energy-per-detection *looks* competitive
+only because that metric is undefined on a zero-detection episode, so it is
+computed from the minority of seeds that found anything — the clearest possible
+illustration of why that number is never quoted without POI beside it.
+
+The comparison is not rigged: the bandit gets the same bandwidth and dwell as the
+fair-tuned sweep, one band maps to exactly one full-width scan, it optimises the
+same priority-weighted reward, and it is paced to survive the horizon like every
+other baseline. Details in `DESIGN.md` §11.13.
+
 ### Ablation: what the belief and scheduler actually contribute
 
 `greedy` is `index` with Markov propagation removed, the staleness bonus zeroed and
