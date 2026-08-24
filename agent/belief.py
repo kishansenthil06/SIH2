@@ -405,7 +405,15 @@ class Belief:
         dt = float(t) - self.t_now
         if dt <= 0.0:
             return self.p
-        return self.pi_on + (self.p - self.pi_on) * np.exp(-self.lam_sum * dt)
+        # Must decay toward the SAME target as `propagate_to`.  This previously
+        # computed `pi` and then used `self.pi_on` anyway, so the non-mutating
+        # scoring path decayed toward the static config prior while the mutating
+        # path decayed toward the learned Beta-Bernoulli floor -- the mechanism
+        # DESIGN.md 11.4 relies on.  It was inert only because the live loop
+        # always calls this with dt <= 0 (which short-circuits above); it would
+        # have bitten the moment anything scored at a hypothetical future `t`,
+        # which is the reason this method exists at all.
+        return pi + (self.p - pi) * np.exp(-self.lam_sum * dt)
 
     # -------------------------------------------------------------- the update
     def update(self, obs: Obs) -> None:

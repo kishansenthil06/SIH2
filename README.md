@@ -189,6 +189,10 @@ That conditional is the useful engineering result. Reporting only `dense` and
   over one action, so against emitters hopping every 50 ms it dwells on a channel
   the emitter has already left. Clairvoyance about the present does not help when
   the target moves inside your own action.
+- **The revisit deadline is best-effort, not a bound.** `DESIGN.md` §7 claimed a
+  provable max-staleness guarantee; measurement shows 11 of 15 index episodes
+  exceed it, and on `sparse` priority-1 staleness reaches the full horizon. Two
+  mechanisms, both diagnosed in §11.12. Do not quote a bounded revisit time.
 - **`random` detects nothing on `sparse`.** A uniformly random 1 MHz scan almost
   never lands on one of 8 emitters in 2000 channels, so that baseline is
   degenerate at this grid width rather than merely weak.
@@ -209,7 +213,7 @@ scheduler are worth, rather than an assertion that they matter.
 | TTFI, priority-1 | median time to first intercept, censored at horizon |
 | Emitter-time coverage | % of emitter-active seconds the receiver was pointed at |
 | **Energy per detection** | joules / distinct `(emitter, activation)` pairs |
-| Max staleness, priority-1 | worst revisit gap on a high-priority channel |
+| Max staleness, priority-1 | worst revisit gap on a high-priority channel. **Not bounded in practice** — see `DESIGN.md` §11.12 |
 | False alarm rate | per channel-dwell, comparable to the configured `P_fa` |
 
 ## Policy rungs

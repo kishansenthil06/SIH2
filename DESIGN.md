@@ -604,3 +604,76 @@ Clairvoyance about the present does not help when the target moves within your
 action. This is strong evidence for keeping the "reference ceiling, not optimal"
 label — but on `agile` it must not be presented as a bound at all, only as a
 comparison point, and the reason must be stated.
+
+### 11.11 Known non-invariant: `Obs.t` can exceed `horizon_s` by up to one retune
+
+Found by `eval/tests/test_sim_env.py` and independently reproduced.
+
+`World._step_scan` truncates the **dwell** against the horizon but not the
+**retune** that precedes it:
+
+```python
+t0 = self.t + t_retune                                   # unbounded
+dwell = min(action.dwell_s, max(0.0, self.horizon_s - t0))
+self.t = t0 + dwell
+```
+
+So a scan issued at `t == horizon_s` still charges its full retune. Measured on
+the shipped 2 GHz grid with a full-span hop: horizon 0.100 s, resulting
+`Obs.t = 0.1403` — an overrun of **40.3 ms**, matching `t_settle + 2e9/50e9`.
+
+**Why it is documented rather than fixed.** The executed dwell truncates to
+exactly 0.0, so no sensing happens in the overrun; `done` is already True; and
+every metric censors at `T`, so no reported number moves. Charging the retune
+energy is also defensible physics — the receiver really did spend that time
+slewing. Clamping the clock instead would make it lie about elapsed time.
+
+**What to watch.** `Obs.t <= horizon_s` is NOT an invariant and must not be
+assumed — notably by anything plotting a time axis from a trace, which will see
+a slightly over-long final step. A passing test pins the current behaviour so a
+future change to it is a deliberate decision rather than an accident.
+
+### 11.12 The deadline bound does NOT hold — the guarantee in §7 is false as written
+
+§7 claims the hard revisit deadline makes "max staleness hard-bounded" a
+*provable* property. **It is not.** Found by `eval/tests/test_agent_scheduler.py`,
+which ships an intentionally failing test, and confirmed independently against
+the shipped `results/runs.csv`:
+
+Bound = `D_1 + max_dwell + max_retune` = 30 + 0.2 + 0.0045 = **30.2045 s**.
+**11 of 15 index episodes exceed it**, and on `sparse` max staleness reaches the
+full 60 s horizon — i.e. some priority-1 channels are never visited at all.
+
+| scenario | seeds over bound | worst max staleness |
+|---|---|---|
+| sparse | 5 / 5 | **60.00 s** (horizon) |
+| dense | 4 / 5 | 31.93 s |
+| agile | 3 / 5 | 30.70 s |
+
+**Mechanism 1 — overdue-ness is ranked in absolute seconds.**
+`agent/scheduler.py` computes `over = stale - deadline_prio` and takes
+`argmax(over)`. Deadlines are `{1: 30, 2: 8, 3: 20}` s, so the *highest* priority
+class has the *longest* deadline: at t = 30 s a routine channel is already +10 s
+overdue while a threat channel is only at 0. Priority-1 is therefore structurally
+last in the very mechanism meant to protect it. A prio-2 channel 32 s overdue
+outranks a prio-1 channel 10 s overdue even when the prio-1 candidate scores 9x
+higher.
+
+**Mechanism 2 — the candidate set is deadline-blind.**
+`IndexPolicy._enumerate` shortlists the top `windows_per_bw` windows *by value*.
+When nothing in that shortlist covers the most-overdue channel,
+`_deadline_override` returns `None` and the "hard" constraint is silently dropped
+with no record. Instrumented: the override wanted to fire on **641 of 986
+decisions and was dropped for want of a covering candidate on 635 — 99.1%**.
+A prio-1 deadline override fired **zero times in every run measured**.
+
+**Consequence for the write-up.** Do not claim a bounded revisit guarantee. The
+deadline layer is *best-effort*, and on `sparse` it is close to inoperative for
+priority 1. The §11.5 min-dwell rule is sound where it fires but is end-to-end
+vacuous for prio-1 for the same reason — no override fires to apply it to.
+
+**The likely fix** (not applied; it changes scheduling behaviour and would
+invalidate the current results table): rank overdue-ness *relative* to the
+deadline (`stale / deadline`) rather than in absolute seconds, and have the
+enumerator inject a covering candidate for the most-overdue channel so the
+override always has something to select.
