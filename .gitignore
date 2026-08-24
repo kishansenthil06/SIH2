@@ -6,3 +6,5 @@ models/*.joblib
 data/logs/
 .venv/
 .DS_Store
+frontend/node_modules/
+frontend/dist/
