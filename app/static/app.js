@@ -1141,14 +1141,32 @@
   // --- MODEL LAB RENDERER ---
   function renderModelInfo(info) {
     if (el.modelSpecBody) {
+      // All figures come from the model manifest via /api/model-info.  They were
+      // hardcoded here and had drifted: the page claimed Brier 0.00507/0.00715
+      // and a 29.1% reduction, against an actual 0.00861/0.01398 and 38.4%.
+      // Hardcoding a number that describes a retrained artefact guarantees it
+      // goes stale, so nothing below is a literal.
+      const fmt = (v, d = 5) =>
+        (typeof v === 'number' && isFinite(v)) ? v.toFixed(d) : '—';
+      const num = (v) =>
+        (typeof v === 'number' && isFinite(v)) ? v.toLocaleString() : '—';
+      const bm = info.brier_score_model, br = info.brier_score_rung1;
+      const haveBrier = typeof bm === 'number' && typeof br === 'number' && br > 0;
+      const redPct = haveBrier ? (100 * (br - bm) / br) : null;
+      const gateTxt = info.gate_status || '';
+      const gatePass = /^PASS/i.test(gateTxt);
+      const trainedOn = (info.training_scenarios || []).join(', ') || '—';
+
       el.modelSpecBody.innerHTML = `
-        <div class="meta-keyval-row"><span class="meta-key">Classifier Architecture:</span><span class="meta-val">HistGradientBoosting + Isotonic CalibratedCV</span></div>
-        <div class="meta-keyval-row"><span class="meta-key">Training Log Rows:</span><span class="meta-val"><strong>${info.training_samples.toLocaleString()}</strong> agent-generated visits</span></div>
-        <div class="meta-keyval-row"><span class="meta-key">Held-Out Test Rows:</span><span class="meta-val">${info.held_out_evaluation_samples.toLocaleString()} samples</span></div>
-        <div class="meta-keyval-row"><span class="meta-key">GBDT Model Brier Score:</span><span class="meta-val text-green"><strong>0.00507</strong></span></div>
-        <div class="meta-keyval-row"><span class="meta-key">Rung-1 Bayes Brier Score:</span><span class="meta-val">0.00715</span></div>
-        <div class="meta-keyval-row"><span class="meta-key">Brier Error Reduction:</span><span class="meta-val text-green"><strong>-0.00208 (29.1% Error Reduction)</strong></span></div>
-        <div class="meta-keyval-row"><span class="meta-key">Deployment Gate Status:</span><span class="meta-val"><span class="spec-badge">✓ GATED & APPROVED</span></span></div>
+        <div class="meta-keyval-row"><span class="meta-key">Classifier Architecture:</span><span class="meta-val">${info.architecture || '—'}</span></div>
+        <div class="meta-keyval-row"><span class="meta-key">Feature Contract:</span><span class="meta-val">${info.contract || '—'}</span></div>
+        <div class="meta-keyval-row"><span class="meta-key">Trained On:</span><span class="meta-val">${trainedOn}</span></div>
+        <div class="meta-keyval-row"><span class="meta-key">Training Log Rows:</span><span class="meta-val"><strong>${num(info.training_samples)}</strong> agent-generated visits</span></div>
+        <div class="meta-keyval-row"><span class="meta-key">Held-Out Test Rows:</span><span class="meta-val">${num(info.held_out_evaluation_samples)} samples</span></div>
+        <div class="meta-keyval-row"><span class="meta-key">GBDT Model Brier Score:</span><span class="meta-val text-green"><strong>${fmt(bm)}</strong></span></div>
+        <div class="meta-keyval-row"><span class="meta-key">Rung-1 Bayes Brier Score:</span><span class="meta-val">${fmt(br)}</span></div>
+        <div class="meta-keyval-row"><span class="meta-key">Brier Error Reduction:</span><span class="meta-val text-green"><strong>${haveBrier ? `-${fmt(br - bm)} (${redPct.toFixed(1)}% Error Reduction)` : '—'}</strong></span></div>
+        <div class="meta-keyval-row"><span class="meta-key">Deployment Gate Status:</span><span class="meta-val"><span class="spec-badge">${gatePass ? '✓ GATED & APPROVED' : gateTxt || '—'}</span></span></div>
       `;
     }
 

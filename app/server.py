@@ -190,6 +190,34 @@ def _run_simulation(policy: str, scenario: str, seed: int, horizon: float = 60.0
     return summary, trace, output_log
 
 
+
+# Human-readable gloss for each entry of agent.base.FEATURE_NAMES.  Keyed by the
+# real feature name so a rename shows up as a blank description rather than a
+# silently wrong one.
+_FEATURE_DOCS = {
+    "p_rung1": "Rung-1 analytic belief; the model can only refine it",
+    "log_staleness": "log1p(time since this channel was last visited)",
+    "log_since_detect": "log1p(time since the last detection here)",
+    "n_visits": "Visits to this channel this episode",
+    "emp_rate": "Laplace-smoothed empirical hit rate",
+    "hit_ema_fast": "Detection EMA, alpha = 0.30",
+    "hit_ema_slow": "Detection EMA, alpha = 0.05",
+    "misses_since_detect": "Consecutive misses since the last detection",
+    "mean_dwell_log": "log1p(mean dwell spent on this channel)",
+    "mean_snr_db": "Mean reported SNR of detections here",
+    "idi_mean": "Mean inter-detection interval",
+    "idi_std": "Std of inter-detection interval",
+    "nbr_recent_hits": "Detections on channels c+/-1..2 within 1 s (catches hoppers)",
+    "band_activity": "Fraction of channels detected-on in the last 1 s",
+    "w_channel": "Mission priority weight w_p, in joules",
+    "t_frac": "Episode progress, t / horizon",
+    # Train-time only: the label is "did the NEXT observation detect", which
+    # depends on that observation's dwell and bandwidth, so the model is given
+    # them rather than being made to average over them.
+    "tau_next_log": "log dwell of the labelling observation (train-time only)",
+    "bw_next_log": "log bandwidth of the labelling observation (train-time only)",
+}
+
 class EWRequestHandler(SimpleHTTPRequestHandler):
     """Custom HTTP handler serving REST API and embedded multi-page UI."""
 
@@ -362,38 +390,53 @@ class EWRequestHandler(SimpleHTTPRequestHandler):
             except Exception:
                 pass
 
-        features = [
-            {"name": "staleness_s", "description": "Time since channel last visited"},
-            {"name": "decayed_belief", "description": "Closed-form Bayesian CTMC decayed P(active)"},
-            {"name": "observed_pi_on", "description": "Empirical active fraction from own visit history"},
-            {"name": "visits_count", "description": "Total scans on this channel"},
-            {"name": "detections_count", "description": "Total detections on this channel"},
-            {"name": "last_obs_snr_db", "description": "Estimated SNR from most recent detection"},
-            {"name": "time_since_last_detection_s", "description": "Time elapsed since last positive detection"},
-            {"name": "channel_idx_norm", "description": "Normalized channel index in grid [0, 1]"},
-            {"name": "priority_weight", "description": "Mission priority weight w_p in Joules"},
-            {"name": "revisit_deadline_s", "description": "Hard deadline for priority class"},
-            {"name": "deadline_urgency", "description": "Ratio of staleness to deadline"},
-            {"name": "rolling_mean_dwell_s", "description": "Average dwell duration spent on channel"},
-            {"name": "energy_budget_frac_remaining", "description": "Remaining energy / total budget"},
-            {"name": "sim_time_norm", "description": "Current time normalized to horizon [0, 1]"},
-            {"name": "freq_dist_from_last_tune_hz", "description": "Hop distance in Hz from previous scan"},
-            {"name": "estimated_retune_cost_j", "description": "L_f * |Δf| hop cost"},
-        ]
+        # Everything below is DERIVED FROM THE MANIFEST, never hardcoded.
+        # These fields were previously literals and had drifted badly: the page
+        # showed Brier 0.00507/0.00715 against the real 0.00861/0.01398, and the
+        # feature list advertised a "channel_idx_norm" input that the model
+        # deliberately does NOT use -- the raw channel index is excluded so the
+        # model cannot memorise emitter positions from the training scenarios
+        # and fail on the held-out one. Reading the manifest keeps this page
+        # honest the next time the model is retrained.
+        feature_names = manifest.get("feature_names") or []
+        features = [{"name": n, "description": _FEATURE_DOCS.get(n, "")} for n in feature_names]
+
+        b_model = manifest.get("brier_model")
+        b_rung1 = manifest.get("brier_rung1")
+        if b_model is not None and b_rung1 is not None and b_rung1 > 0:
+            gate = (
+                f"{'PASS' if manifest.get('gate_ok') else 'FAIL'} — Brier "
+                f"{b_model:.5f} vs rung-1 {b_rung1:.5f} "
+                f"({100.0 * (b_rung1 - b_model) / b_rung1:.1f}% error reduction)"
+            )
+        else:
+            gate = "unknown — no trained model manifest found"
 
         info = {
             "model_path": str(model_path),
             "exists": model_path.exists(),
             "file_size_bytes": model_path.stat().st_size if model_path.exists() else 0,
-            "architecture": "HistGradientBoostingClassifier + CalibratedClassifierCV (Isotonic)",
-            "contract": "16 input features + 2 target action features (tau_next, y_next)",
+            "architecture": manifest.get(
+                "estimator",
+                "HistGradientBoostingClassifier + CalibratedClassifierCV (Isotonic)",
+            ),
+            # n_features counts BOTH, so deriving the split from the two lists
+            # avoids double-counting the extras (the first version of this line
+            # read "18 input features + 2 train-time", which totals 20).
+            "contract": (
+                f"{len(manifest.get('contract_features') or [])} belief features "
+                f"+ {len(manifest.get('train_extra_names') or [])} train-time action "
+                f"features = {manifest.get('n_features', len(feature_names))} model inputs"
+            ),
             "manifest": manifest,
             "features": features,
-            "brier_score_model": 0.00507,
-            "brier_score_rung1": 0.00715,
-            "gate_status": "PASS — Beats Rung 1 by 0.00208 Brier reduction",
-            "training_samples": 516424,
-            "held_out_evaluation_samples": 99608,
+            "brier_score_model": b_model,
+            "brier_score_rung1": b_rung1,
+            "gate_status": gate,
+            "training_samples": manifest.get("n_rows_train"),
+            "held_out_evaluation_samples": manifest.get("n_rows_holdout"),
+            "training_scenarios": manifest.get("observed_scenarios"),
+            "held_out_scenario": manifest.get("held_out_scenario"),
         }
         self._send_json(info)
 
