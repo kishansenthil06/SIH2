@@ -36,7 +36,17 @@ if str(ROOT) not in sys.path:
 from sim.config import build_grid, load_config
 from sim.contract import ChannelGrid
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+FRONTEND_DIST_DIR = ROOT / "frontend" / "dist"
+APP_STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def get_static_dir() -> Path:
+    if FRONTEND_DIST_DIR.exists() and (FRONTEND_DIST_DIR / "index.html").exists():
+        return FRONTEND_DIST_DIR
+    return APP_STATIC_DIR
+
+
+STATIC_DIR = get_static_dir()
 RESULTS_DIR = ROOT / "results"
 STEPS_DIR = RESULTS_DIR / "steps"
 MODELS_DIR = ROOT / "models"
@@ -284,12 +294,24 @@ class EWRequestHandler(SimpleHTTPRequestHandler):
     """Custom HTTP handler serving REST API and embedded multi-page UI."""
 
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
+        self.static_dir = get_static_dir()
+        super().__init__(*args, directory=str(self.static_dir), **kwargs)
 
     def translate_path(self, path: str) -> str:
         parsed = urlparse(path)
-        if parsed.path in SPA_ROUTES:
-            return str(STATIC_DIR / "index.html")
+        rel_path = parsed.path.lstrip("/")
+        target_file = (self.static_dir / rel_path).resolve()
+        
+        # If specific static asset file exists, serve it
+        if rel_path and target_file.exists() and target_file.is_file():
+            return str(target_file)
+        
+        # If not an API endpoint, serve index.html for SPA client-side routing
+        if not parsed.path.startswith("/api/"):
+            index_path = self.static_dir / "index.html"
+            if index_path.exists():
+                return str(index_path)
+
         return super().translate_path(path)
 
     def end_headers(self):
@@ -823,8 +845,14 @@ class EWRequestHandler(SimpleHTTPRequestHandler):
         self._send_json({"status": "training_started", "message": "Rung-2 GBDT training triggered in background."})
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8080):
-    STATIC_DIR.mkdir(parents=True, exist_ok=True)
+def run_server(host: str | None = None, port: int | None = None):
+    if host is None:
+        host = os.environ.get("HOST", "0.0.0.0")
+    if port is None:
+        port = int(os.environ.get("PORT", 8080))
+
+    static_dir = get_static_dir()
+    static_dir.mkdir(parents=True, exist_ok=True)
     STEPS_DIR.mkdir(parents=True, exist_ok=True)
     
     server_address = (host, port)
@@ -832,7 +860,7 @@ def run_server(host: str = "127.0.0.1", port: int = 8080):
     print(f"===============================================================")
     print(f" EW SMART SCAN STRATEGY // ESM MULTI-PAGE PLATFORM SERVER")
     print(f" Running at: http://{host}:{port}/")
-    print(f" Static UI : {STATIC_DIR}")
+    print(f" Static UI : {static_dir}")
     print(f" Results   : {RESULTS_DIR}")
     print(f"===============================================================")
     try:
@@ -844,7 +872,7 @@ def run_server(host: str = "127.0.0.1", port: int = 8080):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="EW Smart Scan Web Server & Command Center")
-    parser.add_argument("--host", default="127.0.0.1", help="Host address (default 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8080, help="Port number (default 8080)")
+    parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"), help="Host address (default 0.0.0.0 or HOST env)")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8080)), help="Port number (default 8080 or PORT env)")
     args = parser.parse_args()
     run_server(host=args.host, port=args.port)
