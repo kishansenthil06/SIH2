@@ -23,7 +23,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from eval.runner import RUNS_COLUMNS, run_matrix, write_runs_csv
+from eval.runner import (
+    DEFAULT_ABLATION_CSV,
+    DEFAULT_RUNS_CSV,
+    RUNS_COLUMNS,
+    _ablation_path_for,
+    _guard_overwrite,
+    run_matrix,
+    write_runs_csv,
+)
 from sim.config import load_config
 
 # A deliberately tiny world.  The properties under test -- schema, determinism,
@@ -185,6 +193,68 @@ class TestHeldOutScenario(unittest.TestCase):
         self.assertIsNotNone(default, "--scenarios has no default to check")
         text = default if isinstance(default, str) else ",".join(default)
         self.assertNotIn("agile", text)
+
+
+class TestResultsFileSafety(unittest.TestCase):
+    """A partial run must not be able to destroy a completed matrix.
+
+    `--out` defaults to the canonical runs.csv and `--ablation-out` defaulted to
+    the canonical ablation.csv INDEPENDENTLY, so running a subset of policies
+    replaced a finished sweep with a fragment -- and redirecting --out still
+    clobbered the ablation table. That happened twice during the build; the
+    second time the dashboard silently showed one scenario instead of three.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "runs.csv"
+        write_runs_csv(
+            run_matrix(policies=["round_robin", "random"], scenarios=[_small_cfg()],
+                       seeds=[0, 1], verbose=False),
+            self.path,
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _subset_rows(self):
+        return [{"policy": "round_robin", "scenario": "sparse", "seed": 0}]
+
+    def test_shrinking_a_results_file_is_refused(self):
+        with self.assertRaises(SystemExit) as ctx:
+            _guard_overwrite(self.path, self._subset_rows(), force=False)
+        msg = str(ctx.exception)
+        self.assertIn("refusing to overwrite", msg)
+        self.assertIn("--force", msg)
+
+    def test_force_permits_the_overwrite(self):
+        _guard_overwrite(self.path, self._subset_rows(), force=True)
+
+    def test_superset_or_equal_is_allowed_without_force(self):
+        """The guard must only block genuine LOSS, never ordinary re-runs."""
+        with open(self.path, "r", encoding="utf-8", newline="") as fh:
+            same = [dict(r) for r in csv.DictReader(fh)]
+        _guard_overwrite(self.path, same, force=False)
+
+    def test_absent_file_is_allowed(self):
+        _guard_overwrite(Path(self.tmp.name) / "nope.csv", self._subset_rows(), force=False)
+
+    def test_ablation_path_follows_its_runs_file(self):
+        """A redirected --out must not write the canonical ablation table."""
+        side = _ablation_path_for(Path(self.tmp.name) / "scratch.csv", None)
+        self.assertEqual(side.name, "scratch.ablation.csv")
+        self.assertNotEqual(side.resolve(), Path(DEFAULT_ABLATION_CSV).resolve())
+
+    def test_canonical_runs_still_writes_canonical_ablation(self):
+        """...but the real sweep must still keep the two in step."""
+        self.assertEqual(
+            _ablation_path_for(DEFAULT_RUNS_CSV, None).resolve(),
+            Path(DEFAULT_ABLATION_CSV).resolve(),
+        )
+
+    def test_explicit_ablation_out_wins(self):
+        want = Path(self.tmp.name) / "explicit.csv"
+        self.assertEqual(_ablation_path_for(DEFAULT_RUNS_CSV, str(want)), want)
 
 
 if __name__ == "__main__":
