@@ -53,7 +53,7 @@ If you prefer to configure the Web Service manually in the Render UI:
    - **Runtime**: `Python`
    - **Build Command**:
      ```bash
-     npm --prefix frontend install --include=optional && npm --prefix frontend run build && pip install -r requirements.txt
+     pip install -r requirements.txt
      ```
    - **Start Command**:
      ```bash
