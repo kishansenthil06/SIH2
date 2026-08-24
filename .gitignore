@@ -5,3 +5,4 @@ results/figures/
 models/*.joblib
 data/logs/
 .venv/
+.DS_Store

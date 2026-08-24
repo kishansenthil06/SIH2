@@ -43,6 +43,7 @@ MODELS_DIR = ROOT / "models"
 RUNS_CSV = RESULTS_DIR / "runs.csv"
 ABLATION_CSV = RESULTS_DIR / "ablation.csv"
 VENV_PYTHON = ROOT / ".venv" / "bin" / "python"
+DATA_PROTOTYPE_CSV = ROOT / "data" / "prototype" / "temporary_rf_dataset.csv"
 
 # Valid SPA routes that should serve index.html
 SPA_ROUTES = {
@@ -54,7 +55,20 @@ SPA_ROUTES = {
     "/policy-lab",
     "/analytics",
     "/audit",
+    "/prototype",
 }
+
+# Cached singleton for prototype RF dataset environment
+_PROTOTYPE_ENV = None
+
+
+def _get_prototype_env():
+    global _PROTOTYPE_ENV
+    if _PROTOTYPE_ENV is None:
+        from src.environment import RFEnvironment
+        _PROTOTYPE_ENV = RFEnvironment(DATA_PROTOTYPE_CSV)
+    return _PROTOTYPE_ENV
+
 
 
 def _get_python_bin() -> str:
@@ -315,6 +329,10 @@ class EWRequestHandler(SimpleHTTPRequestHandler):
         # API Endpoints
         if path == "/api/status":
             self._handle_status()
+        elif path in ("/api/prototype/dataset", "/api/prototype/stats"):
+            self._handle_prototype_dataset()
+        elif path == "/api/prototype/sample":
+            self._handle_prototype_sample(qs)
         elif path == "/api/scenarios":
             self._handle_scenarios()
         elif path == "/api/scenarios/details":
@@ -340,6 +358,8 @@ class EWRequestHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/run":
             self._handle_run(body)
+        elif path == "/api/prototype/run":
+            self._handle_prototype_run(body)
         elif path == "/api/compare":
             self._handle_compare(body)
         elif path == "/api/train":
@@ -371,8 +391,123 @@ class EWRequestHandler(SimpleHTTPRequestHandler):
             "policies": policies,
             "results_dir": str(RESULTS_DIR),
             "trace_count": len(list(STEPS_DIR.glob("*.csv"))) if STEPS_DIR.exists() else 0,
+            "prototype": {
+                "ready": DATA_PROTOTYPE_CSV.exists(),
+                "dataset_path": str(DATA_PROTOTYPE_CSV),
+                "dataset_size_bytes": DATA_PROTOTYPE_CSV.stat().st_size if DATA_PROTOTYPE_CSV.exists() else 0,
+                "total_observations": 100000,
+                "num_bands": 20,
+            },
         }
         self._send_json(info)
+
+    def _handle_prototype_dataset(self):
+        try:
+            env = _get_prototype_env()
+            stats = env.get_stats()
+            # Add sample preview of first 10 observations
+            preview = []
+            for b in sorted(list(env.frequency_bands))[:10]:
+                obs = env.scan(0, b)
+                preview.append({
+                    "time_slot": 0,
+                    "frequency_band": b,
+                    "signal_power": round(float(obs["signal_power"]), 3),
+                    "pulse_width": round(float(obs["pulse_width"]), 3),
+                    "angle_of_arrival": round(float(obs["angle_of_arrival"]), 2) if obs["angle_of_arrival"] is not None else None,
+                    "ground_truth_active": bool(obs["hit"]),
+                })
+            stats["sample_preview"] = preview
+            self._send_json(stats)
+        except Exception as e:
+            self._send_json({"error": f"Failed to load prototype dataset: {e}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _handle_prototype_sample(self, qs: dict):
+        try:
+            time_slot = int(qs.get("time_slot", [0])[0])
+            env = _get_prototype_env()
+            obs = env.get_time_slot_observations(time_slot)
+            self._send_json({
+                "time_slot": time_slot,
+                "observations": obs,
+                "count": len(obs),
+            })
+        except Exception as e:
+            self._send_json({"error": f"Failed to retrieve sample: {e}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _handle_prototype_run(self, body: dict):
+        try:
+            from src.detector import PowerThresholdDetector
+            from src.evaluator import Evaluator
+            from src.receiver import Receiver
+            from src.scanner import make_scanner
+
+            num_scans = min(5000, max(1, int(body.get("num_scans", 100))))
+            threshold = float(body.get("threshold", 5.0))
+            num_bands = min(20, max(1, int(body.get("num_bands", 20))))
+            strategy = str(body.get("strategy", "sequential"))
+            start_slot = max(0, int(body.get("start_slot", 0)))
+
+            env = _get_prototype_env()
+            receiver = Receiver(env)
+            scanner = make_scanner(strategy, receiver, num_bands=num_bands)
+            detector = PowerThresholdDetector(threshold=threshold)
+            evaluator = Evaluator(env)
+
+            scans = []
+            band_activity = {b: 0 for b in range(1, num_bands + 1)}
+
+            for i in range(num_scans):
+                scan_idx = start_slot + i
+                obs = scanner.scan(scan_idx)
+                pred = detector.predict(obs)
+                eval_res = evaluator.evaluate(
+                    time_slot=obs["time_slot"],
+                    frequency_band=obs["frequency_band"],
+                    prediction=pred,
+                )
+                
+                band = obs["frequency_band"]
+                if eval_res["ground_truth"]:
+                    band_activity[band] = band_activity.get(band, 0) + 1
+
+                if i < 200 or i % max(1, num_scans // 100) == 0 or pred or eval_res["ground_truth"]:
+                    scans.append({
+                        "scan_index": i + 1,
+                        "time_slot": obs["time_slot"],
+                        "frequency_band": obs["frequency_band"],
+                        "signal_power": round(float(obs["signal_power"]), 3),
+                        "pulse_width": round(float(obs["pulse_width"]), 3),
+                        "angle_of_arrival": round(float(obs["angle_of_arrival"]), 2) if obs["angle_of_arrival"] is not None else None,
+                        "prediction": bool(pred),
+                        "ground_truth": bool(eval_res["ground_truth"]),
+                        "result": eval_res["result"],
+                    })
+
+            metrics = evaluator.metrics()
+            
+            confusion_matrix = {
+                "tp": metrics.get("true_positive", 0),
+                "fp": metrics.get("false_positive", 0),
+                "tn": metrics.get("true_negative", 0),
+                "fn": metrics.get("false_negative", 0),
+            }
+
+            self._send_json({
+                "status": "success",
+                "strategy": strategy,
+                "num_scans": num_scans,
+                "threshold": threshold,
+                "num_bands": num_bands,
+                "metrics": metrics,
+                "confusion_matrix": confusion_matrix,
+                "band_activity": band_activity,
+                "scans_sample": scans[:100],
+                "total_scans_recorded": len(scans),
+            })
+        except Exception as e:
+            self._send_json({"error": f"Prototype run failed: {e}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
 
     def _handle_scenarios(self):
         scenarios_data = {}
