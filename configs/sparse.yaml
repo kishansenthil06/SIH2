@@ -1,0 +1,79 @@
+# sparse -- the TUNING scenario.  8 emitters over 200 channels (4% occupancy).
+# Tune on this one; report on all three.  See configs/agile.yaml for the held-out set.
+name: sparse
+horizon_s: 60.0
+seed_note: "seeds are supplied on the CLI; this file is deliberately seed-free"
+
+grid:
+  f_start_hz: 2.000e9
+  n_channels: 200
+  channel_bw_hz: 1.0e6
+
+receiver:
+  pfa: 1.0e-3
+  t_settle_s: 0.5e-3
+  f_slew_hz_per_s: 50.0e9
+  # Load-bearing, not cosmetic: without a bandwidth penalty the widest scan
+  # strictly dominates (same time, same energy, 20x the channels) and the
+  # bandwidth knob is degenerate.  1 dB/octave makes a 20 MHz scan 4.3 dB less
+  # sensitive than a 1 MHz one.
+  bw_penalty_db_per_octave: 1.0
+  snr_est_sigma_db: 1.5
+  gain_enabled: false
+  gain_db_high: 10.0
+  gain_nf_improvement_db: 6.0
+  gain_energy_mult: 1.6
+  gain_saturation_snr_db: -5.0
+  gain_fa_mult_on_saturation: 10.0
+
+energy:
+  L_d_w: 1.0                 # 1 W front-end + ADC + DSP while listening
+  L_0_j: 2.0e-3              # L_d*t_settle (0.5 mJ) + fixed DSP/FFT setup (1.5 mJ)
+  L_f_j_per_hz: 2.0e-11      # == L_d_w / f_slew_hz_per_s ; loader asserts this
+  L_sleep_w: 0.01            # 10 mW standby
+  budget_j: 6.0              # ~12 full sweeps over 60 s: binding but not crippling
+
+# AGENT-VISIBLE.  Priorities come from intel, never from truth.
+mission:
+  priority_bands:
+    - {ch_lo: 40,  ch_hi: 60,  priority: 1}    # threat band
+    - {ch_lo: 120, ch_hi: 150, priority: 2}
+    - {ch_lo: 0,   ch_hi: 200, priority: 3}    # catch-all; least specific
+  weights:     {1: 1.000, 2: 0.300, 3: 0.100}  # JOULES -- see DESIGN.md s.1 'reward must exceed the dwell it requires'
+  deadlines_s: {1: 0.5,   2: 2.0,   3: 10.0}
+  watch_list: []
+  watch_deadline_s: 0.3
+
+# SIM ONLY.  agent/ never parses this key.
+# SNR placement is what makes the story true: a sweep cannot afford a 100 ms dwell
+# on 200 channels, but an agent that has narrowed to 3 candidates can.
+emitters:
+  - {kind: fixed,  count: 2, channel_range: [40, 60],   n_channels: 1,
+     snr_db: [-21.0, -18.0], priority: 1, mean_on_s: 0.20, mean_off_s: 8.0, snr_sigma_db: 2.0}
+  - {kind: pulsed, count: 2, channel_range: [120, 150], n_channels: 2,
+     snr_db: [-17.0, -14.0], priority: 2, mean_on_s: 0.60, mean_off_s: 3.0, snr_sigma_db: 2.0}
+  - {kind: fixed,  count: 4, channel_range: [0, 200],   n_channels: 1,
+     snr_db: [-12.0, -8.0],  priority: 3, mean_on_s: 2.00, mean_off_s: 3.0, snr_sigma_db: 1.0}
+
+agent:
+  prior_pi_on: 0.05          # assumed stationary P(active); deliberately not truth
+  prior_lam_sum: 1.0         # assumed mixing rate 1/s; deliberately a bit wrong
+  assumed_snr_mu_db: -15.0   # spec-sheet belief, used for the MARGINAL Pd on misses
+  assumed_snr_sigma_db: 5.0
+  alpha_staleness: 0.5
+  staleness_t_ref_s: 1.0
+  staleness_cap: 20.0
+  score_mode: rate           # rate | raw  ("raw" is the source doc's literal form)
+  bw_candidates_mhz:   [1, 2, 5, 10, 20]
+  dwell_candidates_ms: [1, 2, 5, 10, 20, 50, 100, 200]
+  sleep_candidates_ms: [10, 50, 200]
+  windows_per_bw: 8
+  budget_slack: 0.05
+  learned:
+    enabled: false           # rung 2 is OFF by default; demo path == rung 1
+    beta: 0.6
+    min_visits_for_model: 3
+    model_path: models/activity_hgb.joblib
+
+baselines:
+  round_robin: {bw_mhz: 5, dwell_ms: 10}   # overwritten by the fair-tuning search

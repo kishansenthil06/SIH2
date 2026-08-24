@@ -1,0 +1,124 @@
+# dense -- STRESS scenario. 24 emitters (15%% occupancy), shorter off-times,
+# same 6 J budget so it bites harder.
+name: dense
+horizon_s: 60.0
+seed_note: seeds are supplied on the CLI; this file is deliberately seed-free
+grid:
+  f_start_hz: 2.000e9
+  n_channels: 200
+  channel_bw_hz: 1.0e6
+receiver:
+  pfa: 0.001
+  t_settle_s: 0.0005
+  f_slew_hz_per_s: 50.0e9
+  bw_penalty_db_per_octave: 1.0
+  snr_est_sigma_db: 1.5
+  gain_enabled: false
+  gain_db_high: 10.0
+  gain_nf_improvement_db: 6.0
+  gain_energy_mult: 1.6
+  gain_saturation_snr_db: -5.0
+  gain_fa_mult_on_saturation: 10.0
+energy:
+  L_d_w: 1.0
+  L_0_j: 0.002
+  L_f_j_per_hz: 2.0e-11
+  L_sleep_w: 0.01
+  budget_j: 6.0
+mission:
+  priority_bands:
+  - ch_lo: 40
+    ch_hi: 60
+    priority: 1
+  - ch_lo: 120
+    ch_hi: 150
+    priority: 2
+  - ch_lo: 0
+    ch_hi: 200
+    priority: 3
+  weights:     {1: 1.000, 2: 0.300, 3: 0.100}  # JOULES -- see DESIGN.md s.1 'reward must exceed the dwell it requires'
+  deadlines_s:
+    1: 0.5
+    2: 2.0
+    3: 10.0
+  watch_list: []
+  watch_deadline_s: 0.3
+emitters:
+- kind: fixed
+  count: 6
+  channel_range:
+  - 40
+  - 60
+  n_channels: 1
+  snr_db:
+  - -21.0
+  - -18.0
+  priority: 1
+  mean_on_s: 0.2
+  mean_off_s: 4.0
+  snr_sigma_db: 2.0
+- kind: pulsed
+  count: 8
+  channel_range:
+  - 120
+  - 150
+  n_channels: 2
+  snr_db:
+  - -17.0
+  - -14.0
+  priority: 2
+  mean_on_s: 0.6
+  mean_off_s: 1.5
+  snr_sigma_db: 2.0
+- kind: fixed
+  count: 10
+  channel_range:
+  - 0
+  - 200
+  n_channels: 1
+  snr_db:
+  - -12.0
+  - -8.0
+  priority: 3
+  mean_on_s: 2.0
+  mean_off_s: 1.5
+  snr_sigma_db: 1.0
+agent:
+  prior_pi_on: 0.05
+  prior_lam_sum: 1.0
+  assumed_snr_mu_db: -15.0
+  assumed_snr_sigma_db: 5.0
+  alpha_staleness: 0.5
+  staleness_t_ref_s: 1.0
+  staleness_cap: 20.0
+  score_mode: rate
+  bw_candidates_mhz:
+  - 1
+  - 2
+  - 5
+  - 10
+  - 20
+  dwell_candidates_ms:
+  - 1
+  - 2
+  - 5
+  - 10
+  - 20
+  - 50
+  - 100
+  - 200
+  sleep_candidates_ms:
+  - 10
+  - 50
+  - 200
+  windows_per_bw: 8
+  budget_slack: 0.05
+  learned:
+    enabled: false
+    beta: 0.6
+    min_visits_for_model: 3
+    model_path: models/activity_hgb.joblib
+baselines:
+  round_robin:
+    bw_mhz: 5
+    dwell_ms: 10

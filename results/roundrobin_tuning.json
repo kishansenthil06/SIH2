@@ -1,0 +1,22 @@
+{
+  "bw_mhz": 10.0,
+  "csv": "C:\\Users\\kisha\\OneDrive\\Desktop\\NewSIH\\results\\roundrobin_tuning.csv",
+  "dwell_ms": 10.0,
+  "energy_cap_j": 5.826135699999867,
+  "energy_j": 5.5048071000000425,
+  "energy_per_detection_j": 0.2287358999576737,
+  "horizon_s": 60.0,
+  "n_admissible": 182,
+  "n_configs": 440,
+  "n_evaluated": 190,
+  "n_unique_detections": 24.333333333333332,
+  "poi_60": 0.75,
+  "scan_span_frac": 0.9976783333333272,
+  "scenario": "sparse",
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "sweep_period_s": 3.0
+}
